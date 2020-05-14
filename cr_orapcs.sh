@@ -2,7 +2,7 @@
 #================================================================================
 # Name:	cr_orapcs.sh
 # Type:	bash script
-# Date:	29-April 2020
+# Date:	13-May 2020
 # From:	Americas Customer Engineering team (CET) - Microsoft
 #
 # Copyright and license:
@@ -38,7 +38,7 @@
 #
 # Command-line Parameters:
 #
-#	Usage: ./cr_orapcs.sh -G val -N -M -O val -P val -S val -d val -i val -p val -r val -s val -u val -v
+#	Usage: ./cr_orapcs.sh -G val -N -M -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v
 #
 #	-G resource=group-name  name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)
 #	-N                      skip steps to create vnet/subnet, public-IP, NSG, rules, and PPG
@@ -46,6 +46,7 @@
 #	-O owner-tag            name of the owner to use in Azure tags (no default)
 #	-P project-tag          name of the project to use in Azure tags (no default)
 #	-S subscription         name of the Azure subscription (no default)
+#	-V vip-IPaddr		IP address for the virtual IP (VIP) (default: 10.0.0.10)
 #	-d domain-name          IP domain name (default: internal.cloudapp.net)
 #	-i instance-type        name of the Azure VM instance type for database nodes (default: Standard_DS11-1_v2)
 #	-p Oracle-port          port number of the Oracle TNS Listener (default: 1521)
@@ -57,10 +58,11 @@
 # Usage notes:
 #
 #	The "-N" and "-M" switches were mainly used for debugging, and might well
-#	be removed in more mature versions of the script.
+#	be removed in more mature versions of the script.  They intended to skip
+#	over some steps if something failed later on.
 #
 # Modifications:
-#	TGorman	29apr20	v0.1 written
+#	TGorman	13may20	v0.1 written
 #================================================================================
 #
 #--------------------------------------------------------------------------------
@@ -89,9 +91,6 @@ _nicName1="${_azureOwner}-${_azureProject}-nic01"
 _nicName2="${_azureOwner}-${_azureProject}-nic02"
 _pubIpName1="${_azureOwner}-${_azureProject}-public-ip01"
 _pubIpName2="${_azureOwner}-${_azureProject}-public-ip02"
-_vipName="${_azureOwner}-${_azureProject}-public-vip"
-_vipConfigName1="${_azureOwner}-${_azureProject}-vip-config01"
-_vipConfigName2="${_azureOwner}-${_azureProject}-vip-config02"
 _vmNbr1="vm01"
 _vmNbr2="vm02"
 _vmName1="${_azureOwner}-${_azureProject}-${_vmNbr1}"
@@ -107,6 +106,7 @@ _oraSid="oradb01"
 _oraBase="/u01/app/oracle"
 _oraVersion="12.2.0"
 _oraHome="${_oraBase}/product/${_oraVersion}/dbhome_1"
+_oraTnsDir=${_oraHome}/network/admin
 _oraInvDir="/u01/app/oraInventory"
 _oraOsAcct="oracle"
 _oraOsGroup="oinstall"
@@ -132,12 +132,14 @@ _pcsClusterVG="${_azureOwner}-${_azureProject}-vg"
 _pcsClusterFS="${_azureOwner}-${_azureProject}-fs"
 _pcsClusterDB="${_azureOwner}-${_azureProject}-db"
 _pcsClusterLsnr="${_azureOwner}-${_azureProject}-lsnr"
+_pcsVipAddr="10.0.0.10"
+_pcsVipMask="24"
 #
 #--------------------------------------------------------------------------------
 # Accept command-line parameter values to override default values (above)..
 #--------------------------------------------------------------------------------
 typeset -i _parseErrs=0
-while getopts ":G:MNO:P:S:d:i:p:r:s:u:vw:" OPTNAME
+while getopts ":G:MNO:P:S:V:d:i:p:r:s:u:vw:" OPTNAME
 do
 	case "${OPTNAME}" in
 		G)	_rgName="${OPTARG}"		;;
@@ -146,6 +148,7 @@ do
 		O)	_azureOwner="${OPTARG}"		;;
 		P)	_azureProject="${OPTARG}"	;;
 		S)	_azureSubscription="${OPTARG}"	;;
+		V)	_pcsVipAddr="${OPTARG}"		;;
 		d)	_vmDomain="${OPTARG}"		;;
 		i)	_vmInstanceType="${OPTARG}"	;;
 		p)	_oraLsnrPort="${OPTARG}"	;;
@@ -169,7 +172,7 @@ shift $((OPTIND-1))
 # a usage message and exit with failure status...
 #--------------------------------------------------------------------------------
 if (( ${_parseErrs} > 0 )); then
-	echo "Usage: $0 -G val -N -O val -P val -S val -d val -i val -p val -r val -s val -u val -v"
+	echo "Usage: $0 -G val -N -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v"
 	echo "where:"
 	echo "	-G resource=group-name	name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)"
 	echo "	-N 			skip steps to create vnet/subnet, public-IP, NSG, rules, and PPG"
@@ -177,6 +180,7 @@ if (( ${_parseErrs} > 0 )); then
 	echo "	-O owner-tag		name of the owner to use in Azure tags (no default)"
 	echo "	-P project-tag		name of the project to use in Azure tags (no default)"
 	echo "	-S subscription		name of the Azure subscription (no default)"
+	echo "	-V vip-IPaddr		IP address for the virtual IP (VIP) (default: 10.0.0.10)"
 	echo "	-d domain-name		IP domain name (default: internal.cloudapp.net)"
 	echo "	-i instance-type	name of the Azure VM instance type for database nodes (default: Standard_DS11-1_v2)"
 	echo "	-p Oracle-port		port number of the Oracle TNS Listener (default: 1521)"
@@ -201,9 +205,6 @@ _nicName1="${_azureOwner}-${_azureProject}-nic01"
 _nicName2="${_azureOwner}-${_azureProject}-nic02"
 _pubIpName1="${_azureOwner}-${_azureProject}-public-ip01"
 _pubIpName2="${_azureOwner}-${_azureProject}-public-ip02"
-_vipName="${_azureOwner}-${_azureProject}-public-vip"
-_vipConfigName1="${_azureOwner}-${_azureProject}-vip-config01"
-_vipConfigName2="${_azureOwner}-${_azureProject}-vip-config02"
 _vmName1="${_azureOwner}-${_azureProject}-${_vmNbr1}"
 _vmName2="${_azureOwner}-${_azureProject}-${_vmNbr2}"
 _vmFQDN1="${_vmName1}.${_vmDomain}"
@@ -220,15 +221,16 @@ _pcsClusterLsnr="${_azureOwner}-${_azureProject}-lsnr"
 # Display variable values when output is set to "verbose"...
 #--------------------------------------------------------------------------------
 if [[ "${_outputMode}" = "verbose" ]]; then
-	echo "`date` - DBUG: parameter _progName is \"${_progName}\""
-	echo "`date` - DBUG: parameter _progVersion is \"${_progVersion}\""
-	echo "`date` - DBUG: parameter _progArgs is \"${_progArgs}\""
+	echo "`date` - DBUG: variable _progName is \"${_progName}\""
+	echo "`date` - DBUG: variable _progVersion is \"${_progVersion}\""
+	echo "`date` - DBUG: variable _progArgs is \"${_progArgs}\""
 	echo "`date` - DBUG: parameter _skipVnetNicNsg is \"${_skipVnetNicNsg}\""
 	echo "`date` - DBUG: parameter _skipMachines is \"${_skipMachines}\""
 	echo "`date` - DBUG: parameter _rgName is \"${_rgName}\""
 	echo "`date` - DBUG: parameter _azureOwner is \"${_azureOwner}\""
 	echo "`date` - DBUG: parameter _azureProject is \"${_azureProject}\""
 	echo "`date` - DBUG: parameter _azureSubscription is \"${_azureSubscription}\""
+	echo "`date` - DBUG: parameter _pcsVipAddr is \"${_pcsVipAddr}\""
 	echo "`date` - DBUG: parameter _vmDomain is \"${_vmDomain}\""
 	echo "`date` - DBUG: parameter _vmInstanceType is \"${_vmInstanceType}\""
 	echo "`date` - DBUG: parameter _oraLsnrPort is \"${_oraLsnrPort}\""
@@ -241,14 +243,11 @@ if [[ "${_outputMode}" = "verbose" ]]; then
 	echo "`date` - DBUG: variable _vnetName is \"${_vnetName}\""
 	echo "`date` - DBUG: variable _subnetName is \"${_subnetName}\""
 	echo "`date` - DBUG: variable _nsgName is \"${_nsgName}\""
-	echo "`date` - DBUG: variable _vipName is \"${_vipName}\""
 	echo "`date` - DBUG: variable _nicName1 is \"${_nicName1}\""
 	echo "`date` - DBUG: variable _pubIpName1 is \"${_pubIpName1}\""
-	echo "`date` - DBUG: variable _vipConfigName1 is \"${_vipConfigName1}\""
 	echo "`date` - DBUG: variable _vmName1 is \"${_vmName1}\""
 	echo "`date` - DBUG: variable _nicName2 is \"${_nicName2}\""
 	echo "`date` - DBUG: variable _pubIpName2 is \"${_pubIpName2}\""
-	echo "`date` - DBUG: variable _vipConfigName2 is \"${_vipConfigName2}\""
 	echo "`date` - DBUG: variable _vmName2 is \"${_vmName2}\""
 	echo "`date` - DBUG: variable _pcsClusterName is \"${_pcsClusterName}\""
 	echo "`date` - DBUG: variable _pcsClusterGroup is \"${_pcsClusterGroup}\""
@@ -258,6 +257,7 @@ if [[ "${_outputMode}" = "verbose" ]]; then
 	echo "`date` - DBUG: variable _pcsClusterFS is \"${_pcsClusterFS}\""
 	echo "`date` - DBUG: variable _pcsClusterDB is \"${_pcsClusterDB}\""
 	echo "`date` - DBUG: variable _pcsClusterLsnr is \"${_pcsClusterLsnr}\""
+	echo "`date` - DBUG: variable _pcsVipMask is \"${_pcsVipMask}\""
 	echo "`date` - DBUG: variable _vmFQDN1 is \"${_vmFQDN1}\""
 	echo "`date` - DBUG: variable _vmFQDN2 is \"${_vmFQDN2}\""
 	echo "`date` - DBUG: variable _vmOsDiskSize is \"${_vmOsDiskSize}\""
@@ -463,23 +463,6 @@ fi
 if [[ "${_skipMachines}" = "false" ]]; then
 	#
 	#------------------------------------------------------------------------
-	# Create an Azure public IP address object for use as the cluster's
-	# virtual IP...
-	#------------------------------------------------------------------------
-	echo "`date` - INFO: az network public-ip create ${_vipName}..." | tee -a ${_logFile}
-	az network public-ip create \
-		--name ${_vipName} \
-		--tags owner=${_azureOwner} project=${_azureProject} \
-		--allocation-method Static \
-		--sku Basic \
-		--version IPv4 \
-		--verbose >> ${_logFile} 2>&1
-	if (( $? != 0 )); then
-		echo "`date` - FAIL: az network public-ip create ${_vipName}" | tee -a ${_logFile}
-		exit 1
-	fi
-	#
-	#------------------------------------------------------------------------
 	# Create an Azure public IP address object for use with the first VM...
 	#------------------------------------------------------------------------
 	echo "`date` - INFO: az network public-ip create ${_pubIpName1}..." | tee -a ${_logFile}
@@ -510,23 +493,6 @@ if [[ "${_skipMachines}" = "false" ]]; then
 		--verbose >> ${_logFile} 2>&1
 	if (( $? != 0 )); then
 		echo "`date` - FAIL: az network nic create ${_nicName1}" | tee -a ${_logFile}
-		exit 1
-	fi
-	#
-	#------------------------------------------------------------------------
-	# Create an Azure ip-config object on the first VM's NIC to attach the
-	# VIP...
-	#------------------------------------------------------------------------
-	echo "`date` - INFO: az network nic ip-config create ${_vipConfigName1}..." | tee -a ${_logFile}
-	az network nic ip-config create \
-		--name ${_vipConfigName1} \
-		--nic-name ${_nicName1} \
-		--public-ip-address ${_vipName} \
-		--vnet-name ${_vnetName} \
-		--subnet ${_subnetName} \
-		--verbose >> ${_logFile} 2>&1
-	if (( $? != 0 )); then
-		echo "`date` - FAIL: az network nic ip-config create ${_vipConfigName1}" | tee -a ${_logFile}
 		exit 1
 	fi
 	#
@@ -616,22 +582,6 @@ if [[ "${_skipMachines}" = "false" ]]; then
 	fi
 	#
 	#------------------------------------------------------------------------
-	# Create an Azure public IP address object for use as the cluster's
-	# virtual IP, but do not assign the VIP public IP yet...
-	#------------------------------------------------------------------------
-	echo "`date` - INFO: az network nic ip-config create ${_vipConfigName2}..." | tee -a ${_logFile}
-	az network nic ip-config create \
-		--name ${_vipConfigName2} \
-		--nic-name ${_nicName2} \
-		--vnet-name ${_vnetName} \
-		--subnet ${_subnetName} \
-		--verbose >> ${_logFile} 2>&1
-	if (( $? != 0 )); then
-		echo "`date` - FAIL: az network nic ip-config create ${_vipConfigName2}" | tee -a ${_logFile}
-		exit 1
-	fi
-	#
-	#------------------------------------------------------------------------
 	# Create the second Azure virtual machine (VM), intended to be used as
 	# the standby Oracle database server/host...
 	#------------------------------------------------------------------------
@@ -696,25 +646,12 @@ if (( $? != 0 )); then
 fi
 echo "`date` - INFO: public IP ${_ipAddr2} on ${_vmName2}..." | tee -a ${_logFile}
 #
-echo "`date` - INFO: az network public-ip show ${_vipName}..." | tee -a ${_logFile}
-_vipAddr=`az network public-ip show --name ${_vipName} | \
-	 jq '. | {ipaddr: .ipAddress}' | \
-	 grep ipaddr | \
-	 awk '{print $2}' | \
-	 sed 's/"//g'`
-if (( $? != 0 )); then
-	echo "`date` - FAIL: az network public-ip show ${_vipName}" | tee -a ${_logFile}
-	exit 1
-fi
-echo "`date` - INFO: public VIP ${_vipAddr}..." | tee -a ${_logFile}
-#
 #--------------------------------------------------------------------------------
 # Remove any previous entries of the IP address from the "known hosts" config
 # file...
 #--------------------------------------------------------------------------------
 ssh-keygen -f "${HOME}/.ssh/known_hosts" -R ${_ipAddr1} >> ${_logFile} 2>&1
 ssh-keygen -f "${HOME}/.ssh/known_hosts" -R ${_ipAddr2} >> ${_logFile} 2>&1
-ssh-keygen -f "${HOME}/.ssh/known_hosts" -R ${_vipAddr} >> ${_logFile} 2>&1
 #
 #--------------------------------------------------------------------------------
 # SSH into the first VM to copy the file "oraInst.loc" from the current Oracle
@@ -998,7 +935,7 @@ fi
 # symbolic (soft) links for each file so that it appears that both files are
 # in their original locations...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: move PWDFILE and SPFILE to ${_oraConfDir} on ${_vmName1}..." | tee -a ${_logFile}
+echo "`date` - INFO: move/symlink PWDFILE and SPFILE to ${_oraConfDir} on ${_vmName1}..." | tee -a ${_logFile}
 ssh ${_azureOwner}@${_ipAddr1} "sudo su - ${_oraOsAcct} -c \"mv ${_oraHome}/dbs/orapw${_oraSid} ${_oraHome}/dbs/spfile${_oraSid}.ora ${_oraConfDir}\"" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
 	echo "`date` - FAIL: \"mv ${_oraHome}/dbs/orapw${_oraSid} ${_oraHome}/dbs/spfile${_oraSid}.ora ${_oraConfDir}\" on ${_vmName1}" | tee -a ${_logFile}
@@ -1020,7 +957,7 @@ fi
 # and the server parameter (spfile).  Even though the shared disk is not yet
 # mounted, the symbolic links will be ready when it is...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: create symlinks for PWDFILE and SPFILE on ${_vmName2}..." | tee -a ${_logFile}
+echo "`date` - INFO: symlink PWDFILE and SPFILE to ${_oraConfDir} on ${_vmName2}..." | tee -a ${_logFile}
 ssh ${_azureOwner}@${_ipAddr2} "sudo su - ${_oraOsAcct} -c \"ln -s ${_oraConfDir}/orapw${_oraSid} ${_oraHome}/dbs\"" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
 	echo "`date` - FAIL: \"ln -s ${_oraConfDir}/orapw${_oraSid} ${_oraHome}/dbs\" on ${_vmName2}" | tee -a ${_logFile}
@@ -1033,91 +970,58 @@ if (( $? != 0 )); then
 fi
 #
 #--------------------------------------------------------------------------------
-# SSH into the first VM to move the Oracle TNS Listener's "sqlnet.ora"
-# configuration file to a subdirectory on the shared disk, then create a symbolic
-# (soft) link so that it appears that the files is still in its original
-# location...
+# Perform the same three steps for each of the three Oracle TNS configuration
+# files which are (by default) located in the "$ORACLE_HOME/network/admin"
+# sub-directory on local (non-shared) disk...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: move/link SQLNET files to ${_oraConfDir} on ${_vmName1}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr1} "sudo su - ${_oraOsAcct} -c \"mv ${_oraHome}/network/admin/sqlnet.ora ${_oraConfDir}\"" >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"mv ${_oraHome}/network/admin/sqlnet.ora ${_oraConfDir}\" on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-ssh ${_azureOwner}@${_ipAddr1} "sudo su - ${_oraOsAcct} -c \"ln -s ${_oraConfDir}/sqlnet.ora ${_oraHome}/network/admin\"" >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"ln -s ${_oraConfDir}/sqlnet.ora ${_oraHome}/network/admin\" on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-#
-#--------------------------------------------------------------------------------
-# SSH into the second VM to move the Oracle TNS Listener's "sqlnet.ora"
-# configuration file to a subdirectory on the shared disk, then create a symbolic
-# (soft) link so that it appears that the files is still in its original
-# location...
-#--------------------------------------------------------------------------------
-echo "`date` - INFO: link SQLNET files to ${_oraConfDir} on ${_vmName2}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr2} "sudo su - ${_oraOsAcct} -c \"ln -s ${_oraConfDir}/sqlnet.ora ${_oraHome}/network/admin\"" >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"ln -s ${_oraConfDir}/sqlnet.ora ${_oraHome}/network/admin\" on ${_vmName2}" | tee -a ${_logFile}
-	exit 1
-fi
-#
-#--------------------------------------------------------------------------------
-# SSH into the first VM to copy and edit the Oracle TNS Listener configuration
-# file, and then SCP it up to the second VM...
-#--------------------------------------------------------------------------------
-echo "`date` - INFO: copy TNS LISTENER config file from ${_vmName1} to ${_vmName2}..." | tee -a ${_logFile}
-_tmpFile="/tmp/${_progName}_${_azureOwner}_${_azureProject}_$$.tmp"
-ssh ${_azureOwner}@${_ipAddr1} "sudo su - ${_oraOsAcct} -c \"cat ${_oraHome}/network/admin/listener.ora\"" > ${_tmpFile} 2>> ${_logFile}
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"cat ${_oraHome}/network/admin/listener.ora\" on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-sed -i "s/${_vmNbr1}/${_vmNbr2}/" ${_tmpFile} 2>> ${_logFile}
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"sed -i s/${_vmNbr1}/${_vmNbr2}/ ${_tmpFile}\" on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-scp ${_tmpFile} ${_azureOwner}@${_ipAddr2}:/tmp/listener.ora >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"scp ${_tmpFile} ${_azureOwner}@${_ipAddr2}:/tmp/listener.ora\" on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-ssh ${_azureOwner}@${_ipAddr2} "sudo su - ${_oraOsAcct} -c \"cp /tmp/listener.ora ${_oraHome}/network/admin\"" >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"cp /tmp/listener.ora ${_oraHome}/network/admin\" on ${_vmName2}" | tee -a ${_logFile}
-	exit 1
-fi
-rm -f ${_tmpFile}
-#
-#--------------------------------------------------------------------------------
-# SSH into the first VM to copy and edit the Oracle TNSNAMES configuration file,
-# and then SCP it up to the second VM...
-#--------------------------------------------------------------------------------
-echo "`date` - INFO: copy TNSNAMES config files from ${_vmName1} to ${_vmName2}..." | tee -a ${_logFile}
-_tmpFile="/tmp/${_progName}_${_azureOwner}_${_azureProject}_$$.tmp"
-ssh ${_azureOwner}@${_ipAddr1} "sudo su - ${_oraOsAcct} -c \"cat ${_oraHome}/network/admin/tnsnames.ora\"" > ${_tmpFile} 2>> ${_logFile}
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"cat ${_oraHome}/network/admin/tnsnames.ora\" on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-sed -i "s/${_vmNbr1}/${_vmNbr2}/" ${_tmpFile} 2>> ${_logFile}
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"sed -i s/${_vmNbr1}/${_vmNbr2}/ ${_tmpFile}\" on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-scp ${_tmpFile} ${_azureOwner}@${_ipAddr2}:/tmp/tnsnames.ora >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"scp ${_tmpFile} ${_azureOwner}@${_ipAddr2}:/tmp/tnsnames.ora\" on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-ssh ${_azureOwner}@${_ipAddr2} "sudo su - ${_oraOsAcct} -c \"cp /tmp/tnsnames.ora ${_oraHome}/network/admin\"" >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: \"cp /tmp/tnsnames.ora ${_oraHome}/network/admin\" on ${_vmName2}" | tee -a ${_logFile}
-	exit 1
-fi
-rm -f ${_tmpFile}
+for _fName in sqlnet.ora tnsnames.ora listener.ora
+do
+	#
+	#------------------------------------------------------------------------
+	# SSH into the first VM to edit the Oracle TNS configuration file to
+	# change the fully-qualified domain name of the first VM to the IP address
+	# of the PCS cluster virtual IP...
+	#------------------------------------------------------------------------
+	echo "`date` - INFO: edit ${_oraTnsDir}/${_fName} on ${_vmName1}..." | tee -a ${_logFile}
+	ssh ${_azureOwner}@${_ipAddr1} "sudo su - ${_oraOsAcct} -c \"sed -i s/${_vmFQDN1}/${_pcsVipAddr}/ ${_oraTnsDir}/${_fName}\"" >> ${_logFile} 2>&1
+	if (( $? != 0 )); then
+		echo "`date` - FAIL: \"sed -i s/${_vmFQDN1}/${_pcsVipAddr}/ ${_oraTnsDir}/${_fName}\" on ${_vmName1}" | tee -a ${_logFile}
+		exit 1
+	fi
+	#
+	#------------------------------------------------------------------------
+	# SSH into the first VM to move the Oracle TNS configuration file to a
+	# subdirectory on the shared disk, so that it will be accessible from
+	# whichever node is active.  Then create a symbolic (soft) link so that
+	# it appears to the database instance and other applications that the
+	# file is still in its original location...
+	#------------------------------------------------------------------------
+	echo "`date` - INFO: move/link \"${_fName}\" to ${_oraConfDir} on ${_vmName1}..." | tee -a ${_logFile}
+	ssh ${_azureOwner}@${_ipAddr1} "sudo su - ${_oraOsAcct} -c \"mv ${_oraTnsDir}/${_fName} ${_oraConfDir}\"" >> ${_logFile} 2>&1
+	if (( $? != 0 )); then
+		echo "`date` - FAIL: \"mv ${_oraTnsDir}/${_fName} ${_oraConfDir}\" on ${_vmName1}" | tee -a ${_logFile}
+		exit 1
+	fi
+	ssh ${_azureOwner}@${_ipAddr1} "sudo su - ${_oraOsAcct} -c \"ln -s ${_oraConfDir}/${_fName} ${_oraTnsDir}\"" >> ${_logFile} 2>&1
+	if (( $? != 0 )); then
+		echo "`date` - FAIL: \"ln -s ${_oraConfDir}/${_fName} ${_oraTnsDir}\" on ${_vmName1}" | tee -a ${_logFile}
+		exit 1
+	fi
+	#
+	#------------------------------------------------------------------------
+	# SSH into the second VM to create a symbolic (soft) link for the Oracle
+	# TNS configuration file, so that when the shared disk is attached to
+	# this host/node, the symlink will point at the file in the shared
+	# location...
+	#------------------------------------------------------------------------
+	echo "`date` - INFO: symlink \"${_fName}\" to ${_oraConfDir} on ${_vmName2}..." | tee -a ${_logFile}
+	ssh ${_azureOwner}@${_ipAddr2} "sudo su - ${_oraOsAcct} -c \"ln -s ${_oraConfDir}/${_fName} ${_oraTnsDir}\"" >> ${_logFile} 2>&1
+	if (( $? != 0 )); then
+		echo "`date` - FAIL: \"ln -s ${_oraConfDir}/${_fName} ${_oraTnsDir}\" on ${_vmName2}" | tee -a ${_logFile}
+		exit 1
+	fi
+	#
+done
 #
 #--------------------------------------------------------------------------------
 # SSH into the second VM to create an entry for the Oracle database in the
@@ -1393,12 +1297,12 @@ ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource create \
 	${_pcsClusterVIP} \
 	ocf:heartbeat:IPaddr2 \
 	--group=${_pcsClusterGroup} \
-	ip=${_vipAddr} \
-	cidr_netmask=24 \
+	ip=${_pcsVipAddr} \
+	cidr_netmask=${_pcsVipMask} \
 	nic=eth0 \
 	op monitor interval=10s" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterVIP} IPaddr2 on ${_vmName1}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterVIP} IPaddr2 at ${_pcsVipAddr} on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
