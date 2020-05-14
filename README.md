@@ -88,15 +88,15 @@ The command "pcs cluster status" (or "sudo pcs cluster status") displays additio
 
 ### Forcing failover of Oracle services, VIP, and shared disk
 
-Using the fully-qualified IP hostname of the VM in place of the label "<vm>"...
+Using the fully-qualified IP hostname of the VM in place of the label "{vm}"...
   
-     $ sudo pcs node standby <vm>
+     $ sudo pcs node standby {vm}
 
-...will put the indicated "<vm>" into PCS "standby" mode, which means that the VM cannot host services.  This will force all services to failover to the remaining node.  Issue the command above, and then monitor the progress of failover using the "sudo pcs status" command.
+...will put the indicated "{vm}" into PCS "standby" mode, which means that the VM cannot host services.  This will force all services to failover to the remaining node.  Issue the command above, and then monitor the progress of failover using the "sudo pcs status" command.
   
-To take the "<vm>" out of PCS standby mode and allow it to host services again, issue the following command...
+To take the "{vm}" out of PCS standby mode and allow it to host services again, issue the following command...
   
-     $ sudo pcs node unstandby <vm>
+     $ sudo pcs node unstandby {vm}
 
 ...and then follow up with the "sudo pcs status" command to view any changes to status, which should not happen.
 
