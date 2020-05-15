@@ -1,6 +1,13 @@
 # ora-pcs
 Azure CLI bash script to automatically configure a Pacemaker/Corosync (PCS) cluster for an Oracle Standard Edition database
 
+## Important - prerequisites
+This script uses [Azure Shared Disk](https://docs.microsoft.com/en-us/azure/virtual-machines/linux/disks-shared), which at this time is in limited preview.  Please review the Microsoft documentation for this feature, and request access to the preview program [HERE](https://microsoft.qualtrics.com/jfe/form/SV_3Dh5KrErF9itiUR).
+
+Also, because Azure shared disk feature is in preview, the Azure CLI must be version 2.5.0 or higher.  At present, the [standard Azure Shell](https://shell.azure.com) is running version 2.4.0 of the Azure CLI, so this script will fail.  For information on installing the Azure CLI, please see [HERE](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
+
+Please note that the "cr_orapcs.sh" script does verify the Azure CLI version as it starts.
+
 ## Description
 This Azure CLI bash script fully automates the creation an Oracle database in an HA-LVM cluster on two Azure VMs, using Azure shared disk as the database storage.  Linux HA-LVM on Oracle Linux and Red Hat uses open-source Pacemaker and Corosync to manage the HA-LVM cluster.  The cluster is set up so that only one VM is active with full access to the Oracle database and listener.  All Oracle services can be failed over to the second VM using the HA-LVM cluster.
 
@@ -16,41 +23,41 @@ The "cr_orapcs.sh" bash script automates the following steps...
  8. create the NIC, VM, and shared disk attached for the second VM
  9. display the public IP addresses for both VMs for later use
 10. On both VMs, do the following steps...
-    a. copy Oracle "oraInst.loc" file from inventory location to "/etc" directory
-    b. use "yum" to install the LVM2 package
-    c. create directory mountpoint "/u02"
+    1. copy Oracle "oraInst.loc" file from inventory location to "/etc" directory
+    2. use "yum" to install the LVM2 package
+    3. create directory mountpoint "/u02"
 11. On the first VM only, do the following tasks...
-    a. partition the shared disk
-    b. make a physical volume from the partition
-    c. create a volume group from the physical partition
-    d. create logical volume within the volume group
-    e. create an EXT4 filesystem within the logical volume
-    f. mount the filesystem on "/u02"
-    g. create subdirectories within "/u02" for Oracle database/configuration files
-    h. use the Oracle Database Creation Assistant to create a database and a TNS listener
-    i. create a service account for PCS within the database
-    j. shutdown the Oracle database and stop the TNS Listener
-    k. copy the Oracle PWDFILE and SPFILE to the shared disk and create symlinks in their place
-    l. edit the Oracle TNS sqlnet.ora, listener.ora, and tnsnames.ora configuration files
+    1. partition the shared disk
+    2. make a physical volume from the partition
+    3. create a volume group from the physical partition
+    4. create logical volume within the volume group
+    5. create an EXT4 filesystem within the logical volume
+    6. mount the filesystem on "/u02"
+    7. create subdirectories within "/u02" for Oracle database/configuration files
+    8. use the Oracle Database Creation Assistant to create a database and a TNS listener
+    0. create a service account for PCS within the database
+    10. shutdown the Oracle database and stop the TNS Listener
+    11. copy the Oracle PWDFILE and SPFILE to the shared disk and create symlinks in their place
+    12. edit the Oracle TNS sqlnet.ora, listener.ora, and tnsnames.ora configuration files
        to replace the IP hostname of the first VM with the virtual IP address
-    m. copy the Oracle TNS configuration files to the shared disk, and create symlinks in their place
-    n. unmount the filesystem on "/u02"
+    13. copy the Oracle TNS configuration files to the shared disk, and create symlinks in their place
+    14. unmount the filesystem on "/u02"
 12. On the second VM only, do the following tasks...
-    a. create an entry in the "/etc/oratab" configuration file
-    b. create adump and dpdump subsdirectories
+    1. create an entry in the "/etc/oratab" configuration file
+    2. create adump and dpdump subsdirectories
 13. On both VMs, do the following steps...
-    a. use "yum" to install the PCS package and start/enable the PCSD daemon
-    b. set a password for the PCS account used for remote access
+    1. use "yum" to install the PCS package and start/enable the PCSD daemon
+    2. set a password for the PCS account used for remote access
 14. On the first VM only, do the following steps...
-    a. create and start the PCS cluster, then enable it for automatic restart on node reboot
-    b. set cluster properties to disable STONITH and disable QUORUM for 2-node HA operation
+    1. create and start the PCS cluster, then enable it for automatic restart on node reboot
+    2. set cluster properties to disable STONITH and disable QUORUM for 2-node HA operation
 15. On both VMs, disable LVMETAD daemon and reboot the VM
 16. On the first VM only, create the following PCS resources within a resource group...
-    a. virtual IP
-    b. volume group
-    c. filesystem
-    d. database
-    e. listener
+    1. virtual IP
+    2. volume group
+    3. filesystem
+    4. database
+    5. listener
 
 ## Diagnostics and output
 The "orapcs_output.txt" file contains an example of the output generated by the bash script.  Additionally, the script also saves stdout and stderr output from all commands to a ".log" file in the present working directory, for diagnostic purposes.  If anything fails, it is wise to look in the ".log" file for more information.
