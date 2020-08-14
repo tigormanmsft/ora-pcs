@@ -3,7 +3,7 @@
 # Name:	cr_orapcs.sh
 # Type:	bash script
 # Date:	13-May 2020
-# From:	Americas Customer Engineering team (CET) - Microsoft
+# From:	Customer Architecture & Engineering (CAE) team - Microsoft
 #
 # Copyright and license:
 #
@@ -38,9 +38,10 @@
 #
 # Command-line Parameters:
 #
-#	Usage: ./cr_orapcs.sh -G val -N -M -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v
+#	Usage: ./cr_orapcs.sh -G val -H val -N -M -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v
 #
 #	-G resource=group-name  name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)
+#	-H ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/12.2.0/dbhome_1)
 #	-N                      skip steps to create vnet/subnet, public-IP, NSG, rules, and PPG
 #	-M                      skip steps to create VMs and storage
 #	-O owner-tag            name of the owner to use in Azure tags (no default)
@@ -50,32 +51,63 @@
 #	-d domain-name          IP domain name (default: internal.cloudapp.net)
 #	-i instance-type        name of the Azure VM instance type for database nodes (default: Standard_DS11-1_v2)
 #	-p Oracle-port          port number of the Oracle TNS Listener (default: 1521)
-#	-r region               name of Azure region (default: westus2)
+#	-r region               name of Azure region (default: westcentralus)
 #	-s ORACLE_SID           Oracle System ID (SID) value (default: oradb01)
 #	-u urn                  Azure URN for the VM from the marketplace (default: Oracle:Oracle-Database-Ee:12.2.0.1:12.2.20180725)
 #	-v                      set verbose output is true (default: false)
 #
 # Usage notes:
 #
+#	1) Azure subscription must be specified with "-S" switch, always
+#
+#	2) Azure owner, default is output of "whoami" command in shell, can be
+#	   specified using "-O" switch on command-line
+#
+#	3) Azure project, default is "orapcs", can be specified using "-P"
+#	   switch on command-line
+#
+#	4) Azure resource group, specify with "-G" switch or with a
+#	   combination of "-O" (project owner tag) and "-P" (project name)
+#	   values (default: "(project owner tag)-(project name)-rg").
+#
+#	   For example, if the project owner tag is "abc" and the project
+#	   name is "beetlejuice", then by default the resource group is
+#	   expected to be named "abc-beetlejuice-rg", unless changes have
+#	   been specified using the "-G", "-O", or "-P" switches
+#
+#	5) Use the "-v" (verbose) switch to verify that program variables
+#	   have the expected values
+#
+#	6) For users who are expected to use prebuilt storage accounts
+#	   and networking (i.e. vnet, subnet, network security groups, etc),
+#	   consider using the "-N" switch to accept these as prerequisites 
+#
+#	Please be aware that Azure owner (i.e. "-O") and Azure project (i.e. "-P")
+#	are used to generate names for the Azure resource group, storage
+#	account, virtual network, subnet, network security group and rules,
+#	VM, and storage disks.  Use the "-v" switch to verify expected naming.
+#
 #	The "-N" and "-M" switches were mainly used for debugging, and might well
 #	be removed in more mature versions of the script.  They intended to skip
 #	over some steps if something failed later on.
 #
 # Modifications:
-#	TGorman	13may20	v0.1 written
+#	TGorman	13may20	v0.1	written
+#	TGorman 27jul20	v0.2	added new cmd-line parameters
+#	TGorman	14aug20	v0.3	added STONITH fencing on SCSI
 #================================================================================
 #
 #--------------------------------------------------------------------------------
 # Set global environment variables for the entire script...
 #--------------------------------------------------------------------------------
 _progName="orapcs"
-_progVersion="v0.1"
+_progVersion="v0.3"
 _progArgs="$*"
 _outputMode="terse"
 _azureOwner="`whoami`"
 _azureProject="orapcs"
 _azureRegion="westcentralus"
-_azureSubscription="TIGORMAN-CET subscription"
+_azureSubscription=""
 _skipVnetNicNsg="false" 
 _skipMachines="false" 
 _workDir="`pwd`"
@@ -111,7 +143,8 @@ _oraInvDir="/u01/app/oraInventory"
 _oraOsAcct="oracle"
 _oraOsGroup="oinstall"
 _oraCharSet="WE8ISO8859P15"
-_scsiDev="/dev/sdc"
+_scsiDevName="sdc"
+_scsiDev="/dev/${_scsiDevName}"
 _pvName="${_scsiDev}1"
 _vgName="vg_shared_ora01"
 _lvName="lv_shared_ora01"
@@ -132,6 +165,7 @@ _pcsClusterVG="${_azureOwner}-${_azureProject}-vg"
 _pcsClusterFS="${_azureOwner}-${_azureProject}-fs"
 _pcsClusterDB="${_azureOwner}-${_azureProject}-db"
 _pcsClusterLsnr="${_azureOwner}-${_azureProject}-lsnr"
+_pcsFenceName="${_azureOwner}-${_azureProject}-fence_scsi"
 _pcsVipAddr="10.0.0.10"
 _pcsVipMask="24"
 #
@@ -139,10 +173,11 @@ _pcsVipMask="24"
 # Accept command-line parameter values to override default values (above)..
 #--------------------------------------------------------------------------------
 typeset -i _parseErrs=0
-while getopts ":G:MNO:P:S:V:d:i:p:r:s:u:vw:" OPTNAME
+while getopts ":G:H:MNO:P:S:V:d:i:p:r:s:u:vw:" OPTNAME
 do
 	case "${OPTNAME}" in
 		G)	_rgName="${OPTARG}"		;;
+		H)	_oraHome="${OPTARG}"		;;
 		M)	_skipMachines="true"		;;
 		N)	_skipVnetNicNsg="true"		;;
 		O)	_azureOwner="${OPTARG}"		;;
@@ -172,9 +207,10 @@ shift $((OPTIND-1))
 # a usage message and exit with failure status...
 #--------------------------------------------------------------------------------
 if (( ${_parseErrs} > 0 )); then
-	echo "Usage: $0 -G val -N -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v"
+	echo "Usage: $0 -G val -H val -N -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v"
 	echo "where:"
 	echo "	-G resource=group-name	name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)"
+	echo "	-H ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/12.2.0/dbhome_1)"
 	echo "	-N 			skip steps to create vnet/subnet, public-IP, NSG, rules, and PPG"
 	echo "	-M 			skip steps to create VMs and storage"
 	echo "	-O owner-tag		name of the owner to use in Azure tags (no default)"
@@ -184,7 +220,7 @@ if (( ${_parseErrs} > 0 )); then
 	echo "	-d domain-name		IP domain name (default: internal.cloudapp.net)"
 	echo "	-i instance-type	name of the Azure VM instance type for database nodes (default: Standard_DS11-1_v2)"
 	echo "	-p Oracle-port		port number of the Oracle TNS Listener (default: 1521)"
-	echo "	-r region		name of Azure region (default: westus2)"
+	echo "	-r region		name of Azure region (default: westcentralus)"
 	echo "	-s ORACLE_SID		Oracle System ID (SID) value (default: oradb01)"
 	echo "	-u urn			Azure URN for the VM from the marketplace (default: Oracle:Oracle-Database-Ee:12.2.0.1:12.2.20180725)"
 	echo "	-v			set verbose output is true (default: false)"
@@ -216,6 +252,8 @@ _pcsClusterVG="${_azureOwner}-${_azureProject}-vg"
 _pcsClusterFS="${_azureOwner}-${_azureProject}-fs"
 _pcsClusterDB="${_azureOwner}-${_azureProject}-db"
 _pcsClusterLsnr="${_azureOwner}-${_azureProject}-lsnr"
+_pcsFenceName="${_azureOwner}-${_azureProject}-fence_scsi"
+_oraTnsDir=${_oraHome}/network/admin
 #
 #--------------------------------------------------------------------------------
 # Display variable values when output is set to "verbose"...
@@ -257,6 +295,7 @@ if [[ "${_outputMode}" = "verbose" ]]; then
 	echo "`date` - DBUG: variable _pcsClusterFS is \"${_pcsClusterFS}\""
 	echo "`date` - DBUG: variable _pcsClusterDB is \"${_pcsClusterDB}\""
 	echo "`date` - DBUG: variable _pcsClusterLsnr is \"${_pcsClusterLsnr}\""
+	echo "`date` - DBUG: variable _pcsFenceName is \"${_pcsFenceName}\""
 	echo "`date` - DBUG: variable _pcsVipMask is \"${_pcsVipMask}\""
 	echo "`date` - DBUG: variable _vmFQDN1 is \"${_vmFQDN1}\""
 	echo "`date` - DBUG: variable _vmFQDN2 is \"${_vmFQDN2}\""
@@ -265,6 +304,7 @@ if [[ "${_outputMode}" = "verbose" ]]; then
 	echo "`date` - DBUG: variable _oraVersion is \"${_oraVersion}\""
 	echo "`date` - DBUG: variable _oraBase is \"${_oraBase}\""
 	echo "`date` - DBUG: variable _oraHome is \"${_oraHome}\""
+	echo "`date` - DBUG: variable _oraTnsDir is \"${_oraTnsDir}\""
 	echo "`date` - DBUG: variable _oraInvDir is \"${_oraInvDir}\""
 	echo "`date` - DBUG: variable _oraOsAcct is \"${_oraOsAcct}\""
 	echo "`date` - DBUG: variable _oraOsGroup is \"${_oraOsGroup}\""
@@ -1013,6 +1053,9 @@ do
 	# TNS configuration file, so that when the shared disk is attached to
 	# this host/node, the symlink will point at the file in the shared
 	# location...
+	#
+	# Please note: the shared disk need not be mounted for a symlink to be
+	# created...
 	#------------------------------------------------------------------------
 	echo "`date` - INFO: symlink \"${_fName}\" to ${_oraConfDir} on ${_vmName2}..." | tee -a ${_logFile}
 	ssh ${_azureOwner}@${_ipAddr2} "sudo su - ${_oraOsAcct} -c \"ln -s ${_oraConfDir}/${_fName} ${_oraTnsDir}\"" >> ${_logFile} 2>&1
@@ -1177,22 +1220,22 @@ if (( $? != 0 )); then
 fi
 #
 #--------------------------------------------------------------------------------
-# SSH into the first VM to disable STONITH fencing...
-#--------------------------------------------------------------------------------
-echo "`date` - INFO: pcs property set stonith-enabled=false from ${_vmName1}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr1} "sudo pcs property set stonith-enabled=false" >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo pcs property set stonith-enabled=false on ${_vmName1}" | tee -a ${_logFile}
-	exit 1
-fi
-#
-#--------------------------------------------------------------------------------
 # SSH into the first VM to ignore the default policy requiring a quorum...
 #--------------------------------------------------------------------------------
 echo "`date` - INFO: pcs property set no-quorum-policy=ignore from ${_vmName1}..." | tee -a ${_logFile}
 ssh ${_azureOwner}@${_ipAddr1} "sudo pcs property set no-quorum-policy=ignore" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
 	echo "`date` - FAIL: sudo pcs property set no-quorum-policy=ignore on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
+# SSH into the first VM to enable STONITH fencing in the cluster...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: pcs property set stonith-enabled=true from ${_vmName1}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo pcs property set stonith-enabled=true" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo pcs property set stonith-enabled=true on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
@@ -1290,6 +1333,35 @@ if (( $? != 0 )); then
 fi
 #
 #--------------------------------------------------------------------------------
+# Find the underlying block ID for the SCSI device...
+#--------------------------------------------------------------------------------
+_devById=`ssh ${_azureOwner}@${_ipAddr1} "ls -l /dev/disk/by-id" | grep "/${_scsiDevName}$" | grep "wwn-" | awk '{print $9}'`
+if [[ "${_devById}" = "" ]]
+then
+	echo "`date` - FAIL: \"/dev/disk/by-id\" entry for \"${_scsiDevName}\" not found on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+_devByIdPath="/dev/disk/by-id/${_devById}"
+#
+#--------------------------------------------------------------------------------
+# SSH into the first VM to create a storage-based STONITH device on the shared
+# SCSI device...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: pcs stonith create ${_pcsFenceName} devices=${_devByIdPath} from ${_vmName1}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo pcs stonith create \
+	${_pcsFenceName} fence_scsi \
+	devices=${_devByIdPath} \
+	pcmk_host_list=\"${_vmFQDN1} ${_vmFQDN2}\" \
+	pcmk_monitor_action=metadata \
+	pcmk_reboot_action=off \
+	meta provides=unfencing \
+	--group=${_pcsClusterGroup}" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo pcs stonith create ${_pcsFenceName} on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
 # SSH into the first VM to create a cluster resource for the virtual IP address...
 #--------------------------------------------------------------------------------
 echo "`date` - INFO: pcs resource create ${_pcsClusterVIP} ocf:heartbeat:IPaddr2 ${_vmName1}..." | tee -a ${_logFile}
@@ -1374,9 +1446,20 @@ ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource create \
 	user=${_oraOsAcct} \
 	home=${_oraHome} \
 	listener=${_oraLsnr} \
-	tns_admin=${_oraHome}/network/admin" >> ${_logFile} 2>&1
+	tns_admin=${_oraTnsDir}" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterLsnr} ocf:heartbeat:oralsnr --group=${_pcsClusterGroup} sid=${_oraSid} home=${_oraHome} listener=${_oraLsnr} tns_admin=${_oraHome}/network/admin" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterLsnr} ocf:heartbeat:oralsnr --group=${_pcsClusterGroup} sid=${_oraSid} home=${_oraHome} listener=${_oraLsnr} tns_admin=${_oraTnsDir}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
+# Perform a verbose "live check" of the validity of the configuration of the
+# PCS cluster...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: crm_verify --live-check --verbose..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo crm_verify --live-check --verbose" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo crm_verify --live-check --verbose" | tee -a ${_logFile}
 	exit 1
 fi
 #
