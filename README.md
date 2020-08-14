@@ -2,11 +2,7 @@
 Azure CLI bash script to automatically configure a Pacemaker/Corosync (PCS) cluster for an Oracle Standard Edition database
 
 ## Important - prerequisites
-This script uses [Azure Shared Disk](https://docs.microsoft.com/en-us/azure/virtual-machines/linux/disks-shared), which at this time is in limited preview.  Please review the Microsoft documentation for this feature, and request access to the preview program [HERE](https://microsoft.qualtrics.com/jfe/form/SV_3Dh5KrErF9itiUR).
-
-Also, because Azure shared disk feature is in preview, the Azure CLI must be version 2.5.0 or higher.  At present, the [standard Azure Shell](https://shell.azure.com) is running version 2.4.0 of the Azure CLI, so this script will fail.  For information on installing the Azure CLI, please see [HERE](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest).
-
-Please note that the "cr_orapcs.sh" script does verify the Azure CLI version as it starts.
+This script uses [Azure Shared Disk](https://docs.microsoft.com/en-us/azure/virtual-machines/linux/disks-shared), which at this time is generally available but still limited by region.  Premium SSD with max-shares > 1 are limited to West Central US only at the present time, and UltraDisk with max-shares > 1 are available for all UltraDisk.
 
 ## Description
 This Azure CLI bash script fully automates the creation an Oracle database in an HA-LVM cluster on two Azure VMs, using Azure shared disk as the database storage.  Linux HA-LVM on Oracle Linux and Red Hat uses open-source Pacemaker and Corosync to manage the HA-LVM cluster.  The cluster is set up so that only one VM is active with full access to the Oracle database and listener.  All Oracle services can be failed over to the second VM using the HA-LVM cluster.
@@ -53,7 +49,8 @@ The "cr_orapcs.sh" bash script automates the following steps...
     2. set cluster properties to disable STONITH and disable QUORUM for 2-node HA operation
 15. On both VMs, disable LVMETAD daemon and reboot the VM
 16. On the first VM only, create the following PCS resources within a resource group...
-    1. virtual IP
+    1. STONITH device for fencing on SCSI shared disk using persistent reservations
+    2. virtual IP
     2. volume group
     3. filesystem
     4. database
@@ -77,7 +74,7 @@ Usage: ./cr_orapcs.sh -G val -N -M -O val -P val -S val -V val -d val -i val -p 
 	-d domain-name          IP domain name (default: internal.cloudapp.net)
 	-i instance-type        name of the Azure VM instance type for database nodes (default: Standard_DS11-1_v2)
 	-p Oracle-port          port number of the Oracle TNS Listener (default: 1521)
-	-r region               name of Azure region (default: westus2)
+	-r region               name of Azure region (default: westcentralus)
 	-s ORACLE_SID           Oracle System ID (SID) value (default: oradb01)
 	-u urn                  Azure URN for the VM from the marketplace (default: Oracle:Oracle-Database-Ee:12.2.0.1:12.2.20180725)
 	-v                      set verbose output is true (default: false)
@@ -99,7 +96,7 @@ Using the fully-qualified IP hostname of the VM in place of the label "{vm}"...
   
      $ sudo pcs node standby {vm}
 
-...will put the indicated "{vm}" into PCS "standby" mode, which means that the VM cannot host services.  This will force all services to failover to the remaining node.  Issue the command above, and then monitor the progress of failover using the "sudo pcs status" command.
+...will put the specified "{vm}" into PCS "standby" mode, which means that the VM cannot host services.  This will force all services to failover to the remaining node.  Issue the command above, and then monitor the progress of failover using the "sudo pcs status" command.
   
 To take the "{vm}" out of PCS standby mode and allow it to host services again, issue the following command...
   
@@ -110,3 +107,5 @@ To take the "{vm}" out of PCS standby mode and allow it to host services again, 
 To failback the Oracle services to the original VM, make the other VM (on which the services currently reside) in standby mode, and be sure to "unstandby" that node after the Oracle services have been successfully forced off it.
 
 Of course, the purpose of the HA-LVM cluster is high-availability in the event of failure, so killing some of the services directly is another way to test, bearing in mind that the PCS cluster polls periodically for failover.  In other words, failover will not occur instantly after failure, but 30 seconds or 60 seconds later when the polling discovers the failure and then retries to verify that the failure has indeed happened.
+
+Please note the official PCS documentation [HERE] (https://clusterlabs.org/pacemaker/doc/) as well as the Clusterlabs wiki [HERE] (https://wiki.clusterlabs.org/wiki/Main_Page).
