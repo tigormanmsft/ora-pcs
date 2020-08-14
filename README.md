@@ -108,4 +108,4 @@ To failback the Oracle services to the original VM, make the other VM (on which 
 
 Of course, the purpose of the HA-LVM cluster is high-availability in the event of failure, so killing some of the services directly is another way to test, bearing in mind that the PCS cluster polls periodically for failover.  In other words, failover will not occur instantly after failure, but 30 seconds or 60 seconds later when the polling discovers the failure and then retries to verify that the failure has indeed happened.
 
-Please note the official PCS documentation [HERE] (https://clusterlabs.org/pacemaker/doc/) as well as the Clusterlabs wiki [HERE] (https://wiki.clusterlabs.org/wiki/Main_Page).
+Please note the official PCS documentation [HERE](https://clusterlabs.org/pacemaker/doc/) as well as the Clusterlabs wiki [HERE](https://wiki.clusterlabs.org/wiki/Main_Page).
