@@ -1,6 +1,8 @@
 # ora-pcs
 Azure CLI bash script to automatically configure a Pacemaker/Corosync (PCS) cluster for an Oracle Standard Edition database
 
+(note: the use of standard edition is only for illustration purposes;  this script works equally well with Oracle Enterprise Edition)
+
 ## Important - prerequisites
 This script uses [Azure Shared Disk](https://docs.microsoft.com/en-us/azure/virtual-machines/linux/disks-shared), which at this time is generally available but still limited by region.  Premium SSD with max-shares > 1 are limited to West Central US only at the present time, and UltraDisk with max-shares > 1 are available for all UltraDisk.
 
