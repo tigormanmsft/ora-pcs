@@ -3,7 +3,7 @@
 # Name:	cr_orapcs.sh
 # Type:	bash script
 # Date:	13-May 2020
-# From:	Customer Architecture & Engineering (CAE) team - Microsoft
+# From: Customer Architecture & Engineering (CAE) - Microsoft
 #
 # Copyright and license:
 #
@@ -94,14 +94,15 @@
 # Modifications:
 #	TGorman	13may20	v0.1	written
 #	TGorman 27jul20	v0.2	added new cmd-line parameters
-#	TGorman	14aug20	v0.3	added STONITH fencing on SCSI
+#	TGorman 14aug20	v0.3	added SCSI fencing
+#	TGorman	17aug20	v0.4	added pause before CRM_VERIFY on both nodes
 #================================================================================
 #
 #--------------------------------------------------------------------------------
 # Set global environment variables for the entire script...
 #--------------------------------------------------------------------------------
 _progName="orapcs"
-_progVersion="v0.3"
+_progVersion="v0.4"
 _progArgs="$*"
 _outputMode="terse"
 _azureOwner="`whoami`"
@@ -1453,13 +1454,30 @@ if (( $? != 0 )); then
 fi
 #
 #--------------------------------------------------------------------------------
-# Perform a verbose "live check" of the validity of the configuration of the
-# PCS cluster...
+# Pause for 5 seconds before running verbose "live check" on both nodes...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: crm_verify --live-check --verbose..." | tee -a ${_logFile}
+echo "`date` - INFO: pause for 5 seconds..." | tee -a ${_logFile}
+sleep 5
+#
+#--------------------------------------------------------------------------------
+# SSH into the first VM to perform a verbose "live check" of the validity of the
+# configuration of the PCS cluster...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: crm_verify --live-check --verbose on ${_vmName1}..." | tee -a ${_logFile}
 ssh ${_azureOwner}@${_ipAddr1} "sudo crm_verify --live-check --verbose" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo crm_verify --live-check --verbose" | tee -a ${_logFile}
+	echo "`date` - FAIL: crm_verify --live-check --verbose on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
+# SSH into the first VM to perform a verbose "live check" of the validity of the
+# configuration of the PCS cluster...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: crm_verify --live-check --verbose on ${_vmName2}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr2} "sudo crm_verify --live-check --verbose" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: crm_verify --live-check --verbose on ${_vmName2}" | tee -a ${_logFile}
 	exit 1
 fi
 #
