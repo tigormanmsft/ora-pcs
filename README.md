@@ -7,7 +7,7 @@ Azure CLI bash script to automatically configure a Pacemaker/Corosync (PCS) clus
 This script uses [Azure Shared Disk](https://docs.microsoft.com/en-us/azure/virtual-machines/linux/disks-shared-enable).
 
   - Premium SSD with max_shares > 1 are limited by region as specified [HERE](https://docs.microsoft.com/en-us/azure/virtual-machines/disks-shared-enable?tabs=azure-cli#regional-availability).
-  - UltraDisk with max-shares > 1 are available for all regions where UltraDisk is available.
+  - UltraDisk with max-shares > 1 are available for all regions where UltraDisk is available.  [More info...](https://docs.microsoft.com/en-us/azure/virtual-machines/disks-enable-ultra-ssd)
 
 ## Description
 This Azure CLI bash script fully automates the creation an Oracle database in an HA-LVM cluster on two Azure VMs, using Azure shared disk as the database storage.  Linux HA-LVM on Oracle Linux and Red Hat uses open-source Pacemaker and Corosync to manage the HA-LVM cluster.  The cluster is set up so that only one VM is active with full access to the Oracle database and listener.  All Oracle services can be failed over to the second VM using the HA-LVM cluster.
