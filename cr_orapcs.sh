@@ -38,7 +38,9 @@
 #
 # Command-line Parameters:
 #
-#	Usage: ./cr_orapcs.sh -G val -H val -N -M -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v
+#	cr_orapcs.sh -G val -H val -N -M -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v
+#
+#	where:
 #
 #	-G resource=group-name  name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)
 #	-H ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/12.2.0/dbhome_1)
@@ -96,13 +98,14 @@
 #	TGorman 27jul20	v0.2	added new cmd-line parameters
 #	TGorman 14aug20	v0.3	added SCSI fencing
 #	TGorman	17aug20	v0.4	added pause before CRM_VERIFY on both nodes
+#	TGorman	11sep20	v0.5	added availability set for both nodes
 #================================================================================
 #
 #--------------------------------------------------------------------------------
 # Set global environment variables for the entire script...
 #--------------------------------------------------------------------------------
 _progName="orapcs"
-_progVersion="v0.4"
+_progVersion="v0.5"
 _progArgs="$*"
 _outputMode="terse"
 _azureOwner="`whoami`"
@@ -119,6 +122,7 @@ _vnetName="${_azureOwner}-${_azureProject}-vnet"
 _subnetName="${_azureOwner}-${_azureProject}-subnet"
 _nsgName="${_azureOwner}-${_azureProject}-nsg"
 _ppgName="${_azureOwner}-${_azureProject}-ppg"
+_avSetName="${_azureOwner}-${_azureProject}-avset"
 _vmSharedDisk="${_azureOwner}-${_azureProject}-sharedDisk01"
 _nicName1="${_azureOwner}-${_azureProject}-nic01"
 _nicName2="${_azureOwner}-${_azureProject}-nic02"
@@ -237,6 +241,7 @@ _vnetName="${_azureOwner}-${_azureProject}-vnet"
 _subnetName="${_azureOwner}-${_azureProject}-subnet"
 _nsgName="${_azureOwner}-${_azureProject}-nsg"
 _ppgName="${_azureOwner}-${_azureProject}-ppg"
+_avSetName="${_azureOwner}-${_azureProject}-avset"
 _vmSharedDisk="${_azureOwner}-${_azureProject}-sharedDisk01"
 _nicName1="${_azureOwner}-${_azureProject}-nic01"
 _nicName2="${_azureOwner}-${_azureProject}-nic02"
@@ -282,6 +287,8 @@ if [[ "${_outputMode}" = "verbose" ]]; then
 	echo "`date` - DBUG: variable _vnetName is \"${_vnetName}\""
 	echo "`date` - DBUG: variable _subnetName is \"${_subnetName}\""
 	echo "`date` - DBUG: variable _nsgName is \"${_nsgName}\""
+	echo "`date` - DBUG: variable _ppgName is \"${_ppgName}\""
+	echo "`date` - DBUG: variable _avSetName is \"${_avSetName}\""
 	echo "`date` - DBUG: variable _nicName1 is \"${_nicName1}\""
 	echo "`date` - DBUG: variable _pubIpName1 is \"${_pubIpName1}\""
 	echo "`date` - DBUG: variable _vmName1 is \"${_vmName1}\""
@@ -331,9 +338,23 @@ echo "`date` - INFO: \"$0 ${_progArgs}\" ${_progVersion}, starting..." >> ${_log
 #--------------------------------------------------------------------------------
 # Azure shared disk requires AZ CLI version 2.5.0 or above...
 #--------------------------------------------------------------------------------
-if [[ "`az --version 2> /dev/null | grep '^azure-cli' | awk '{print $2}'`" < "2.5.0" ]]; then
+_azVersion="`az --version 2> /dev/null | grep '^azure-cli' | awk '{print $2}'`"
+typeset -i _azVersionRelease="`echo ${_azVersion} | awk -F\. '{print $1}'`"
+typeset -i _azVersionMajor="`echo ${_azVersion} | awk -F\. '{print $2}'`"
+typeset -i _azVersionMinor="`echo ${_azVersion} | awk -F\. '{print $3}'`"
+if (( ${_azVersionRelease} < 2 ))
+then
 	echo "`date` - FAIL: az CLI version is less than 2.5.0; does not support Azure shared disk" | tee -a ${_logFile}
 	exit 1
+else
+	if (( ${_azVersionRelease} == 2 ))
+	then
+		if (( ${_azVersionMajor} < 5 ))
+		then
+			echo "`date` - FAIL: az CLI version is less than 2.5.0; does not support Azure shared disk" | tee -a ${_logFile}
+			exit 1
+		fi
+	fi
 fi
 #
 #--------------------------------------------------------------------------------
@@ -496,6 +517,20 @@ if [[ "${_skipVnetNicNsg}" = "false" ]]; then
 		exit 1
 	fi
 	#
+	#------------------------------------------------------------------------
+	# Create an Azure availability set for this project...
+	#------------------------------------------------------------------------
+	echo "`date` - INFO: az vm availability-set create ${_avSetName}..." | tee -a ${_logFile}
+	az vm availability-set create \
+		--name ${_avSetName} \
+		--ppg ${_ppgName} \
+		--tags owner=${_azureOwner} project=${_azureProject} \
+		--verbose >> ${_logFile} 2>&1
+	if (( $? != 0 )); then
+		echo "`date` - FAIL: az vm availability-set create ${_avSetName}" | tee -a ${_logFile}
+		exit 1
+	fi
+	#
 fi
 #
 #--------------------------------------------------------------------------------
@@ -549,6 +584,7 @@ if [[ "${_skipMachines}" = "false" ]]; then
 		--size ${_vmInstanceType} \
 		--nics ${_nicName1} \
 		--ppg ${_ppgName} \
+		--availability-set ${_avSetName} \
 		--os-disk-name ${_vmName1}-osdisk \
 		--os-disk-size-gb ${_vmOsDiskSize} \
 		--os-disk-caching ReadWrite \
@@ -634,6 +670,7 @@ if [[ "${_skipMachines}" = "false" ]]; then
 		--size ${_vmInstanceType} \
 		--nics ${_nicName2} \
 		--ppg ${_ppgName} \
+		--availability-set ${_avSetName} \
 		--os-disk-name ${_vmName2}-osdisk \
 		--os-disk-size-gb ${_vmOsDiskSize} \
 		--os-disk-caching ReadWrite \
@@ -1454,10 +1491,10 @@ if (( $? != 0 )); then
 fi
 #
 #--------------------------------------------------------------------------------
-# Pause for 5 seconds before running verbose "live check" on both nodes...
+# Pause for 10 seconds before running verbose "live check" on both nodes...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: pause for 5 seconds..." | tee -a ${_logFile}
-sleep 5
+echo "`date` - INFO: pause for 10 seconds..." | tee -a ${_logFile}
+sleep 10
 #
 #--------------------------------------------------------------------------------
 # SSH into the first VM to perform a verbose "live check" of the validity of the
