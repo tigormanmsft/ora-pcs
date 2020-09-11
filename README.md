@@ -69,15 +69,15 @@ The name of the Azure subscription has no default value, so the "-S" command-lin
 
     $ ./cr_orapcs.sh -S MySubscriptionName
 
-The name of the Azure resource group defaults to "{owner}-{project}-rg", where "{owner}" is the name of the OS account in which the script is being executed (i.e. output from "whoami" command) and "{project}" defaults to the string "orapcs".  The "{owner}-{project}" string combination is used a lot within the script for naming objects like resource groups, VMs, storage, PPGs, etc, so both these basic values can be changed from the defaults using the "-O" and "-P" command-line switches, respectively...
+The name of the Azure resource group defaults to "{owner}-{project}-rg", where "{owner}" is the name of the OS account in which the script is being executed (i.e. output from "whoami" command) and "{project}" defaults to the string "orapcs".  The "{owner}-{project}" string combination is used a lot within the script for naming objects like resource groups, VMs, storage, PPGs, etc.  So with this minimal call syntax, where only the name of the Azure subscription is specified, will result in the script expecting a resource group to already exist with the name of "{owner}-orapcs-rg", where "{owner}" is the OS account name of the Azure CLI shell running the script.  For example, when the author uses "https://shell.azure.com", the resulting OS account name is "tim", so using this minimal call syntax for the "cr_orapcs.sh" script means that it expects an Azure resource group named "tim-orapcs-rg" to exist already, and it will create about 14 Azure objects with a prefix of "tim-orapcs-".  If you don't want the resource group to be required to have this name, then both these basic values can be changed from the defaults using the "-O" and "-P" command-line switches, respectively...
 
     $ ./cr_orapcs.sh -S MySubscriptionName -O test -P foobar
 
-As a result, the name of the resource group will be expected to be "test-foobar-rg".  If the name of the resource group was something else (i.e. "MyResourceGroupName") but you'd like all of the objects created by the script to start with the prefix string "test-foobar-", then you can use...
+As a result, the name of the resource group will be expected to be "test-foobar-rg", and all of the Azure objects created within the resource group will also be named with the prefix string of "test-foobar-".  If the name of the resource group is something else (i.e. "MyResourceGroupName") but you'd like all of the objects created by the script to start with the prefix string "test-foobar-", then you can use the following call syntax...
 
     $ ./cr_orapcs.sh -S MySubscriptionName -R MyResourceGroupName -O test -P foobar
 
-As a result, the precreated resource group named "MyResourceGroupName" within the existing "MySubscriptionName" subscription will be populated with objects with names like "test-foobar-vm01", "test-foobar-vnet", etc.
+As a result, the precreated resource group named "MyResourceGroupName" within the existing "MySubscriptionName" subscription will be populated with objects with names like "test-foobar-vm01", "test-foobar-vnet", "test-foobar-vnet", etc.
 
 Please see the next section for a complete list of all of the command-line switches, what they control, and default values...
 
@@ -104,6 +104,9 @@ Usage: ./cr_orapcs.sh -G val -H val -N -M -O val -P val -S val -V val -d val -i 
   
 Notes on call syntax:
 The "-N" and "-M" switches were mainly used for initial debugging, and might well be removed in more mature versions of the script.  They intended to skip over some steps if something failed later on.
+
+Additional note:
+If you change the URN of the marketplace VM image with the "-u" switch, then you will probably need to change the path of "$ORACLE_HOME" directory using the "-H" switch as well?
 
 ## Testing steps
 
