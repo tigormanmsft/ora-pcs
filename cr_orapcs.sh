@@ -38,28 +38,24 @@
 #
 # Command-line Parameters:
 #
-#	cr_orapcs.sh -G val -H val -N -M -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v -w val -x
+#	cr_orapcs.sh -N -M -O val -P val -S val -V val -g val -h val -i val -r val -u val -v -w val
 #
 #	where:
 #
-#	-G resource=group-name	name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)
-#	-H ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/19.0.0/dbhome_1)
 #	-N			skip steps to create vnet/subnet, public-IP, NSG, rules, and PPG
 #	-M			skip steps to create VMs and storage
 #	-O owner-tag		name of the owner to use in Azure tags (no default)
 #	-P project-tag		name of the project to use in Azure tags (no default)
 #	-S subscription		name of the Azure subscription (no default)
 #	-V vip-IPaddr		IP address for the virtual IP (VIP) (default: 10.0.0.10)
-#	-d domain-name		IP domain name (default: internal.cloudapp.net)
-#	-i instance-type	name of the Azure VM instance type for database nodes (default: Standard_DS11-1_v2)
-#	-p Oracle-port		port number of the Oracle TNS Listener (default: 1521)
+#	-g resource-group	name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)
+#	-h ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/19.0.0/dbhome_1)
+#	-i instance-type	name of the Azure VM instance type for database nodes (default: Standard_D2s_v4)
 #	-r region		name of Azure region (default: westcentralus)
-#	-s ORACLE_SID		Oracle System ID (SID) value (default: oradb01)
 #	-u urn			Azure URN for the VM from the marketplace
 #				(default: Oracle:oracle-database-19-3:oracle-database-19-0904:19.3.1)
 #	-v			set verbose output is true (default: false)
 #	-w password		Oracle SYS/SYSTEM account password (default: oracleA1)
-#	-x			enable accelerated network on NICs attached to VMs (default: disabled)
 #
 # Usage notes:
 #
@@ -83,9 +79,9 @@
 #	5) Use the "-v" (verbose) switch to verify that program variables
 #	   have the expected values
 #
-#	6) For users who are expected to use prebuilt storage accounts
-#	   and networking (i.e. vnet, subnet, network security groups, etc),
-#	   consider using the "-N" switch to accept these as prerequisites 
+#	6) For users who are expected to use prebuilt networking (i.e. vnet,
+#	   subnet, network security groups, etc), consider using the "-N"
+#	   switch to accept these as prerequisites 
 #
 #	Please be aware that Azure owner (i.e. "-O") and Azure project (i.e. "-P")
 #	are used to generate names for the Azure resource group, storage
@@ -109,14 +105,17 @@
 #	TGorman	12nov20 v0.7	contains code to disable Linux firewalld; also
 #				has code that is commented-out to enable Linux
 #				firewall and open necessary ports
-#	TGorman	29jan21	v0.8	enable accelerated networking on NICs
+#	TGorman	29jan21	v0.8	set accelerated networking TRUE at NIC creation
+#				and change default VM instance type to
+#				"Standard_D2s_v4"
+#	TGorman	05apr21	v0.9	correct handling of ephemeral SSD by instance type
 #================================================================================
 #
 #--------------------------------------------------------------------------------
 # Set global environment variables for the entire script...
 #--------------------------------------------------------------------------------
 _progName="orapcs"
-_progVersion="v0.8"
+_progVersion="v0.9"
 _progArgs="$*"
 _outputMode="terse"
 _azureOwner="`whoami`"
@@ -127,7 +126,6 @@ _skipVnetNicNsg="false"
 _skipMachines="false" 
 _workDir="`pwd`"
 _logFile="${_workDir}/${_azureOwner}-${_azureProject}.log"
-_saName="${_azureOwner}${_azureProject}sa"
 _rgName="${_azureOwner}-${_azureProject}-rg"
 _vnetName="${_azureOwner}-${_azureProject}-vnet"
 _subnetName="${_azureOwner}-${_azureProject}-subnet"
@@ -158,8 +156,7 @@ _vmFQDN1="${_vmName1}.${_vmDomain}"
 _vmFQDN2="${_vmName2}.${_vmDomain}"
 _vmOsDiskSize="32"
 _vmDataDiskSize="1024"
-_vmInstanceType="Standard_DS11-1_v2"
-_vmAccelNetw="false"
+_vmInstanceType="Standard_D2s_v4"
 _oraSid="oradb01"
 _oraBase="/u01/app/oracle"
 _oraVersion="19.0.0"
@@ -169,11 +166,9 @@ _oraInvDir="/u01/app/oraInventory"
 _oraOsAcct="oracle"
 _oraOsGroup="oinstall"
 _oraCharSet="WE8ISO8859P15"
-_scsiDevName="sdc"
-_scsiDev="/dev/${_scsiDevName}"
-_pvName="${_scsiDev}1"
 _vgName="vg_shared_ora01"
 _lvName="lv_shared_ora01"
+_fsType="xfs"
 _oraMntDir="/u02"
 _oraDataDir="${_oraMntDir}/oradata"
 _oraFRADir="${_oraMntDir}/orarecv"
@@ -187,12 +182,12 @@ _pcsClusterUser="hacluster"
 _pcsClusterName="${_azureOwner}-${_azureProject}-cluster"
 _pcsClusterGroup="${_azureOwner}-${_azureProject}-group"
 _pcsClusterVIP="${_azureOwner}-${_azureProject}-vip"
-_pcsClusterAzureLB="${_lbName}"
-_pcsClusterVG="${_azureOwner}-${_azureProject}-vg"
+_pcsClusterLB="${_lbName}"
+_pcsClusterLVM="${_azureOwner}-${_azureProject}-lvm"
 _pcsClusterFS="${_azureOwner}-${_azureProject}-fs"
 _pcsClusterDB="${_azureOwner}-${_azureProject}-db"
 _pcsClusterLsnr="${_azureOwner}-${_azureProject}-lsnr"
-_pcsFenceName="${_azureOwner}-${_azureProject}-fence_scsi"
+_pcsFenceName="${_azureOwner}-${_azureProject}-fence"
 _pcsVipAddr="10.0.0.10"
 _pcsVipMask="24"
 #
@@ -200,26 +195,22 @@ _pcsVipMask="24"
 # Accept command-line parameter values to override default values (above)..
 #--------------------------------------------------------------------------------
 typeset -i _parseErrs=0
-while getopts ":G:H:MNO:P:S:V:d:i:p:r:s:u:vw:x" OPTNAME
+while getopts ":MNO:P:S:V:g:h:i:r:u:vw:" OPTNAME
 do
 	case "${OPTNAME}" in
-		G)	_rgName="${OPTARG}"		;;
-		H)	_oraHome="${OPTARG}"		;;
 		M)	_skipMachines="true"		;;
 		N)	_skipVnetNicNsg="true"		;;
 		O)	_azureOwner="${OPTARG}"		;;
 		P)	_azureProject="${OPTARG}"	;;
 		S)	_azureSubscription="${OPTARG}"	;;
 		V)	_pcsVipAddr="${OPTARG}"		;;
-		d)	_vmDomain="${OPTARG}"		;;
+		g)	_rgName="${OPTARG}"		;;
+		h)	_oraHome="${OPTARG}"		;;
 		i)	_vmInstanceType="${OPTARG}"	;;
-		p)	_oraLsnrPort="${OPTARG}"	;;
 		r)	_azureRegion="${OPTARG}"	;;
-		s)	_oraSid="${OPTARG}"		;;
 		u)	_vmUrn="${OPTARG}"		;;
 		v)	_outputMode="verbose"		;;
 		w)	_oraSysPwd="${OPTARG}"		;;
-		x)	_vmAccelNetw="true"		;;
 		:)	echo "`date` - FAIL: expected \"${OPTARG}\" value not found"
 			typeset -i _parseErrs=${_parseErrs}+1
 			;;
@@ -235,26 +226,22 @@ shift $((OPTIND-1))
 # a usage message and exit with failure status...
 #--------------------------------------------------------------------------------
 if (( ${_parseErrs} > 0 )); then
-	echo "Usage: $0 -G val -H val -N -O val -P val -S val -V val -d val -i val -p val -r val -s val -u val -v -w val -x"
+	echo "Usage: $0 -M -N -O val -P val -S val -V val -g val -h val -i val -r val -u val -v -w val"
 	echo "where:"
-	echo "	-G resource=group-name	name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)"
-	echo "	-H ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/19.0.0/dbhome_1)"
-	echo "	-N 			skip steps to create vnet/subnet, public-IP, NSG, rules, and PPG"
 	echo "	-M 			skip steps to create VMs and storage"
+	echo "	-N 			skip steps to create vnet/subnet, public-IP, NSG, rules, and PPG"
 	echo "	-O owner-tag		name of the owner to use in Azure tags (no default)"
 	echo "	-P project-tag		name of the project to use in Azure tags (no default)"
 	echo "	-S subscription		name of the Azure subscription (no default)"
 	echo "	-V vip-IPaddr		IP address for the virtual IP (VIP) (default: 10.0.0.10)"
-	echo "	-d domain-name		IP domain name (default: internal.cloudapp.net)"
-	echo "	-i instance-type	name of the Azure VM instance type for database nodes (default: Standard_DS11-1_v2)"
-	echo "	-p Oracle-port		port number of the Oracle TNS Listener (default: 1521)"
+	echo "	-g resource-group	name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)"
+	echo "	-h ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/19.0.0/dbhome_1)"
+	echo "	-i instance-type	name of the Azure VM instance type for database nodes (default: Standard_D2s_v4)"
 	echo "	-r region		name of Azure region (default: westcentralus)"
-	echo "	-s ORACLE_SID		Oracle System ID (SID) value (default: oradb01)"
 	echo "	-u urn			Azure URN for the VM from the marketplace"
 	echo "				(default: Oracle:oracle-database-19-3:oracle-database-19-0904:19.3.1)"
 	echo "	-v			set verbose output is true (default: false)"
 	echo "	-w password		Oracle SYS/SYSTEM account password (default: oracleA1)"
-	echo "	-x			enable accelerated networking on NICs attached to VMs (default: disabled)"
 	exit 1
 fi
 #
@@ -262,7 +249,6 @@ fi
 # Re-set script variables in case "owner" or "project" was changed...
 #--------------------------------------------------------------------------------
 _logFile="${_workDir}/${_azureOwner}-${_azureProject}.log"
-_saName="${_azureOwner}${_azureProject}sa"
 _vnetName="${_azureOwner}-${_azureProject}-vnet"
 _subnetName="${_azureOwner}-${_azureProject}-subnet"
 _nsgName="${_azureOwner}-${_azureProject}-nsg"
@@ -287,12 +273,12 @@ _vmFQDN2="${_vmName2}.${_vmDomain}"
 _pcsClusterName="${_azureOwner}-${_azureProject}-cluster"
 _pcsClusterGroup="${_azureOwner}-${_azureProject}-group"
 _pcsClusterVIP="${_azureOwner}-${_azureProject}-vip"
-_pcsClusterAzureLB="${_lbName}"
-_pcsClusterVG="${_azureOwner}-${_azureProject}-vg"
+_pcsClusterLB="${_lbName}"
+_pcsClusterLVM="${_azureOwner}-${_azureProject}-lvm"
 _pcsClusterFS="${_azureOwner}-${_azureProject}-fs"
 _pcsClusterDB="${_azureOwner}-${_azureProject}-db"
 _pcsClusterLsnr="${_azureOwner}-${_azureProject}-lsnr"
-_pcsFenceName="${_azureOwner}-${_azureProject}-fence_scsi"
+_pcsFenceName="${_azureOwner}-${_azureProject}-fence"
 _oraTnsDir=${_oraHome}/network/admin
 #
 #--------------------------------------------------------------------------------
@@ -309,15 +295,12 @@ if [[ "${_outputMode}" = "verbose" ]]; then
 	echo "`date` - DBUG: parameter _azureProject is \"${_azureProject}\""
 	echo "`date` - DBUG: parameter _azureSubscription is \"${_azureSubscription}\""
 	echo "`date` - DBUG: parameter _pcsVipAddr is \"${_pcsVipAddr}\""
-	echo "`date` - DBUG: parameter _vmDomain is \"${_vmDomain}\""
 	echo "`date` - DBUG: parameter _vmInstanceType is \"${_vmInstanceType}\""
-	echo "`date` - DBUG: parameter _oraLsnrPort is \"${_oraLsnrPort}\""
 	echo "`date` - DBUG: parameter _azureRegion is \"${_azureRegion}\""
-	echo "`date` - DBUG: parameter _oraSid is \"${_oraSid}\""
 	echo "`date` - DBUG: parameter _vmUrn is \"${_vmUrn}\""
 	echo "`date` - DBUG: variable _workDir is \"${_workDir}\""
 	echo "`date` - DBUG: variable _logFile is \"${_logFile}\""
-	echo "`date` - DBUG: variable _saName is \"${_saName}\""
+	echo "`date` - DBUG: variable _vmDomain is \"${_vmDomain}\""
 	echo "`date` - DBUG: variable _vnetName is \"${_vnetName}\""
 	echo "`date` - DBUG: variable _subnetName is \"${_subnetName}\""
 	echo "`date` - DBUG: variable _nsgName is \"${_nsgName}\""
@@ -336,12 +319,15 @@ if [[ "${_outputMode}" = "verbose" ]]; then
 	echo "`date` - DBUG: variable _nicName3 is \"${_nicName3}\""
 	echo "`date` - DBUG: variable _pubIpName3 is \"${_pubIpName3}\""
 	echo "`date` - DBUG: variable _vmName3 is \"${_vmName3}\""
+	echo "`date` - DBUG: variable _oraSid is \"${_oraSid}\""
+	echo "`date` - DBUG: variable _oraLsnr is \"${_oraLsnr}\""
+	echo "`date` - DBUG: variable _oraLsnrPort is \"${_oraLsnrPort}\""
 	echo "`date` - DBUG: variable _pcsClusterName is \"${_pcsClusterName}\""
 	echo "`date` - DBUG: variable _pcsClusterGroup is \"${_pcsClusterGroup}\""
 	echo "`date` - DBUG: variable _pcsClusterUser is \"${_pcsClusterUser}\""
 	echo "`date` - DBUG: variable _pcsClusterVIP is \"${_pcsClusterVIP}\""
-	echo "`date` - DBUG: variable _pcsClusterAzureLB is \"${_pcsClusterAzureLB}\""
-	echo "`date` - DBUG: variable _pcsClusterVG is \"${_pcsClusterVG}\""
+	echo "`date` - DBUG: variable _pcsClusterLB is \"${_pcsClusterLB}\""
+	echo "`date` - DBUG: variable _pcsClusterLVM is \"${_pcsClusterLVM}\""
 	echo "`date` - DBUG: variable _pcsClusterFS is \"${_pcsClusterFS}\""
 	echo "`date` - DBUG: variable _pcsClusterDB is \"${_pcsClusterDB}\""
 	echo "`date` - DBUG: variable _pcsClusterLsnr is \"${_pcsClusterLsnr}\""
@@ -359,8 +345,6 @@ if [[ "${_outputMode}" = "verbose" ]]; then
 	echo "`date` - DBUG: variable _oraOsAcct is \"${_oraOsAcct}\""
 	echo "`date` - DBUG: variable _oraOsGroup is \"${_oraOsGroup}\""
 	echo "`date` - DBUG: variable _oraCharSet is \"${_oraCharSet}\""
-	echo "`date` - DBUG: variable _scsiDev is \"${_scsiDev}\""
-	echo "`date` - DBUG: variable _pvName is \"${_pvName}\""
 	echo "`date` - DBUG: variable _vgName is \"${_vgName}\""
 	echo "`date` - DBUG: variable _lvName is \"${_lvName}\""
 	echo "`date` - DBUG: variable _oraMntDir is \"${_oraMntDir}\""
@@ -435,21 +419,6 @@ fi
 if [[ "${_skipVnetNicNsg}" = "false" ]]; then
 	#
 	#------------------------------------------------------------------------
-	# Create an Azure storage account for this project...
-	#------------------------------------------------------------------------
-	echo "`date` - INFO: az storage account create ${_saName}..." | tee -a ${_logFile}
-	az storage account create \
-		--name ${_saName} \
-		--sku Standard_LRS \
-		--access-tier Hot \
-		--tags owner=${_azureOwner} project=${_azureProject} \
-		--verbose >> ${_logFile} 2>&1
-	if (( $? != 0 )); then
-		echo "`date` - FAIL: az storage account create ${_saName}" | tee -a ${_logFile}
-		exit 1
-	fi
-	#
-	#------------------------------------------------------------------------
 	# Create an Azure virtual network for this project...
 	#------------------------------------------------------------------------
 	echo "`date` - INFO: az network vnet create ${_vnetName}..." | tee -a ${_logFile}
@@ -481,21 +450,20 @@ if [[ "${_skipVnetNicNsg}" = "false" ]]; then
 	#------------------------------------------------------------------------
 	# Create a custom Azure network security group rule to permit SSH access...
 	#------------------------------------------------------------------------
-	echo "`date` - INFO: az network nsg rule create ssh-tcp-access..." | tee -a ${_logFile}
+	echo "`date` - INFO: az network nsg rule create ssh-cloud-shell..." | tee -a ${_logFile}
 	az network nsg rule create \
-		--name ssh-tcp-access \
-		--nsg-name ${_nsgName} \
-		--priority 1000 \
-		--direction Inbound \
-		--protocol TCP \
-		--source-address-prefixes \* \
-		--source-port-ranges \* \
-		--destination-address-prefixes \* \
-		--destination-port-ranges 22 \
-		--access Allow \
+                --name ssh-cloud-shell \
+                --nsg-name ${_nsgName} \
+                --priority 1000 \
+                --direction Inbound \
+                --protocol TCP \
+                --source-address-prefixes AzureCloud \
+                --destination-address-prefixes \* \
+                --destination-port-ranges 22 \
+                --access Allow \
 		--verbose >> ${_logFile} 2>&1
 	if (( $? != 0 )); then
-		echo "`date` - FAIL: az network nsg rule create ssh-tcp-access" | tee -a ${_logFile}
+		echo "`date` - FAIL: az network nsg rule create ssh-cloud-shell" | tee -a ${_logFile}
 		exit 1
 	fi
 	#
@@ -606,8 +574,8 @@ if [[ "${_skipMachines}" = "false" ]]; then
 		--vnet-name ${_vnetName} \
 		--subnet ${_subnetName} \
 		--network-security-group ${_nsgName} \
-		--accelerated-networking ${_vmAccelNetw} \
 		--public-ip-address ${_pubIpName1} \
+		--accelerated-networking TRUE \
 		--tags owner=${_azureOwner} project=${_azureProject} \
 		--verbose >> ${_logFile} 2>&1
 	if (( $? != 0 )); then
@@ -693,8 +661,8 @@ if [[ "${_skipMachines}" = "false" ]]; then
 		--vnet-name ${_vnetName} \
 		--subnet ${_subnetName} \
 		--network-security-group ${_nsgName} \
-		--accelerated-networking ${_vmAccelNetw} \
 		--public-ip-address ${_pubIpName2} \
+		--accelerated-networking TRUE \
 		--tags owner=${_azureOwner} project=${_azureProject} \
 		--verbose >> ${_logFile} 2>&1
 	if (( $? != 0 )); then
@@ -765,8 +733,8 @@ if [[ "${_skipMachines}" = "false" ]]; then
 		--vnet-name ${_vnetName} \
 		--subnet ${_subnetName} \
 		--network-security-group ${_nsgName} \
-		--accelerated-networking ${_vmAccelNetw} \
 		--public-ip-address ${_pubIpName3} \
+		--accelerated-networking TRUE \
 		--tags owner=${_azureOwner} project=${_azureProject} \
 		--verbose >> ${_logFile} 2>&1
 	if (( $? != 0 )); then
@@ -1076,20 +1044,32 @@ if (( $? != 0 )); then
 fi
 #
 #--------------------------------------------------------------------------------
+# SSH into the first VM to determine if Ephemeral/Temporary SSD exists under the
+# "/mnt/resource" mount-point.
+#
+# If "/mnt/resource" is mounted upon "/dev/sdb", then Ephemeral/Temporary SSD
+# exists.  If the "/mnt/resource" is mounted on "/dev/sda" or elsewhere, then
+# ephemeral/temporary SSD does not exist on this VM instance type...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: df -h /mnt/resource on ${_vmName1}..." | tee -a ${_logFile}
+_scsiDevName="sdb"
+if [[ "`ssh ${_azureOwner}@${_ipAddr1} "df -h /mnt/resource | tail -1 | awk '{print $1}' | grep ${_scsiDevName}" 2>&1`" != "" ]]
+then
+	_scsiDevName="sdc"
+fi
+_scsiDev="/dev/${_scsiDevName}"
+_pvName="${_scsiDev}1"
+#
+#--------------------------------------------------------------------------------
 # SSH into the first VM to create a volume label on the shared disk...
 # 
 # If the shared disk is less than 2 TB in size, then use "msdos" volume label,
 # but if it is larger, then we must use "GPT" volume label format...
 #--------------------------------------------------------------------------------
-if (( ${_vmDataDiskSize} <= 2048 )); then
-	_volLabel="msdos"
-else
-	_volLabel="gpt"
-fi
-echo "`date` - INFO: parted ${_scsiDev} mklabel ${_volLabel} on ${_vmName1}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr1} "sudo parted ${_scsiDev} mklabel ${_volLabel}" >> ${_logFile} 2>&1
+echo "`date` - INFO: parted ${_scsiDev} mklabel gpt on ${_vmName1}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo parted ${_scsiDev} mklabel gpt" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo parted ${_scsiDev} mklabel ${_volLabel} on ${_vmName1}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo parted ${_scsiDev} mklabel gpt on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
@@ -1097,10 +1077,10 @@ fi
 # SSH into the first VM to create a single primary partitition consuming the
 # entire shared disk...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: sudo parted -a opt ${_scsiDev} mkpart primary ext4 0% 100%..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr1} "sudo parted -a opt ${_scsiDev} mkpart primary ext4 0% 100%" >> ${_logFile} 2>&1
+echo "`date` - INFO: sudo parted -a opt ${_scsiDev} mkpart primary ${_fsType} 0% 100%..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo parted -a opt ${_scsiDev} mkpart primary ${_fsType} 0% 100%" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo parted mkpart -a opt ${_scsiDev} primary ext4 0% 100% on ${_vmName1}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo parted mkpart -a opt ${_scsiDev} primary ${_fsType} 0% 100% on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
@@ -1143,10 +1123,10 @@ fi
 # SSH into the first VM to create an EXT4 filesystem on the "logical volume" on
 # the shared disk...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: mkfs.ext4 /dev/${_vgName}/${_lvName} on ${_vmName1}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr1} "sudo mkfs.ext4 /dev/${_vgName}/${_lvName}" >> ${_logFile} 2>&1
+echo "`date` - INFO: mkfs.${_fsType} /dev/${_vgName}/${_lvName} on ${_vmName1}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo mkfs.${_fsType} /dev/${_vgName}/${_lvName}" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo mkfs.ext4 /dev/${_vgName}/${_lvName} on ${_vmName1}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo mkfs.${_fsType} /dev/${_vgName}/${_lvName} on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
@@ -1221,8 +1201,8 @@ grant connect to ${_oraClusterSvcAcct};
 exit success
 __EOF__\"" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-        echo "`date` - FAIL: create database service account for Pacemaker/Corosync on ${_vmName1}" | tee -a ${_logFile}
-        exit 1
+	echo "`date` - FAIL: create database service account for Pacemaker/Corosync on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
 fi
 #
 #--------------------------------------------------------------------------------
@@ -1238,8 +1218,8 @@ shutdown immediate
 exit success
 __EOF__\"" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-        echo "`date` - FAIL: shutdown immediate ${_oraSid} on ${_vmName1}" | tee -a ${_logFile}
-        exit 1
+	echo "`date` - FAIL: shutdown immediate ${_oraSid} on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
 fi
 #
 #--------------------------------------------------------------------------------
@@ -1770,14 +1750,14 @@ fi
 #--------------------------------------------------------------------------------
 # SSH into the first VM to create a cluster resource for the Azure load balancer...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: pcs resource create ${_pcsClusterAzureLB} ocf:heartbeat:azure-lb ${_vmName1}..." | tee -a ${_logFile}
+echo "`date` - INFO: pcs resource create ${_pcsClusterLB} ocf:heartbeat:azure-lb ${_vmName1}..." | tee -a ${_logFile}
 ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource create \
-	${_pcsClusterAzureLB} \
+	${_pcsClusterLB} \
 	ocf:heartbeat:azure-lb \
 	--group=${_pcsClusterGroup} \
 	port=${_lbProbePort}" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterAzureLB} azure-lb at ${_lbProbePort} on ${_vmName1}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterLB} azure-lb at ${_lbProbePort} on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
@@ -1785,15 +1765,15 @@ fi
 # SSH into the first VM to create a cluster resource for the volume group
 # consisting of the shared disk...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: pcs resource create ${_pcsClusterVG} ocf:heartbeat:LVM volgrpname=${_vgName} on ${_vmName1}..." | tee -a ${_logFile}
+echo "`date` - INFO: pcs resource create ${_pcsClusterLVM} ocf:heartbeat:LVM volgrpname=${_vgName} on ${_vmName1}..." | tee -a ${_logFile}
 ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource create \
-	${_pcsClusterVG} \
+	${_pcsClusterLVM} \
 	ocf:heartbeat:LVM \
 	--group=${_pcsClusterGroup} \
 	volgrpname=${_vgName} \
 	exclusive=true" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterVG} LVM on ${_vmName1}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterLVM} LVM on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
@@ -1808,9 +1788,27 @@ ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource create \
 	--group=${_pcsClusterGroup} \
 	device=\"/dev/${_vgName}/${_lvName}\" \
 	directory=\"${_oraMntDir}\" \
-	fstype=\"ext4\"" >> ${_logFile} 2>&1
+	fstype=\"${_fsType}\"" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
 	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterFS} Filesystem on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
+# SSH into the first VM to create a cluster resource for the Oracle TNS Listener...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: pcs resource create ${_pcsClusterLsnr} oralsnr sid=${_oraSid} --group=${_pcsClusterGroup}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource create \
+	${_pcsClusterLsnr} \
+	ocf:heartbeat:oralsnr \
+	--group=${_pcsClusterGroup} \
+	sid=${_oraSid} \
+	user=${_oraOsAcct} \
+	home=${_oraHome} \
+	listener=${_oraLsnr} \
+	tns_admin=${_oraTnsDir}" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterLsnr} ocf:heartbeat:oralsnr --group=${_pcsClusterGroup} sid=${_oraSid} home=${_oraHome} listener=${_oraLsnr} tns_admin=${_oraTnsDir}" | tee -a ${_logFile}
 	exit 1
 fi
 #
@@ -1837,28 +1835,9 @@ if (( $? != 0 )); then
 fi
 #
 #--------------------------------------------------------------------------------
-# SSH into the first VM to create a cluster resource for the Oracle TNS Listener
-# to the Oracle database instance on the shared disk...
-#--------------------------------------------------------------------------------
-echo "`date` - INFO: pcs resource create ${_pcsClusterLsnr} oralsnr sid=${_oraSid} --group=${_pcsClusterGroup}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource create \
-	${_pcsClusterLsnr} \
-	ocf:heartbeat:oralsnr \
-	--group=${_pcsClusterGroup} \
-	sid=${_oraSid} \
-	user=${_oraOsAcct} \
-	home=${_oraHome} \
-	listener=${_oraLsnr} \
-	tns_admin=${_oraTnsDir}" >> ${_logFile} 2>&1
-if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo pcs resource create ${_pcsClusterLsnr} ocf:heartbeat:oralsnr --group=${_pcsClusterGroup} sid=${_oraSid} home=${_oraHome} listener=${_oraLsnr} tns_admin=${_oraTnsDir}" | tee -a ${_logFile}
-	exit 1
-fi
-#
-#--------------------------------------------------------------------------------
 # Pause for 10 seconds before running verbose "live check" on both nodes...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: pause for 5 seconds..." | tee -a ${_logFile}
+echo "`date` - INFO: pause for 10 seconds..." | tee -a ${_logFile}
 sleep 10
 #
 #--------------------------------------------------------------------------------
