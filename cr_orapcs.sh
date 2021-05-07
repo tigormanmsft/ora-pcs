@@ -51,7 +51,7 @@
 #	-g resource-group	name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)
 #	-h ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/19.0.0/dbhome_1)
 #	-i instance-type	name of the Azure VM instance type for database nodes (default: Standard_D2s_v4)
-#	-r region		name of Azure region (default: westcentralus)
+#	-r region		name of Azure region (default: westus2)
 #	-u urn			Azure URN for the VM from the marketplace
 #				(default: Oracle:oracle-database-19-3:oracle-database-19-0904:19.3.1)
 #	-v			set verbose output is true (default: false)
@@ -109,18 +109,20 @@
 #				and change default VM instance type to
 #				"Standard_D2s_v4"
 #	TGorman	05apr21	v0.9	correct handling of ephemeral SSD by instance type
+#	TGorman	26apr21 v1.0	set waagent.conf to rebuild swapfile after reboot,
+#				set default image to 19c, and perform yum updates
 #================================================================================
 #
 #--------------------------------------------------------------------------------
 # Set global environment variables for the entire script...
 #--------------------------------------------------------------------------------
 _progName="orapcs"
-_progVersion="v0.9"
+_progVersion="v1.0"
 _progArgs="$*"
 _outputMode="terse"
 _azureOwner="`whoami`"
 _azureProject="orapcs"
-_azureRegion="westcentralus"
+_azureRegion="westus2"
 _azureSubscription=""
 _skipVnetNicNsg="false" 
 _skipMachines="false" 
@@ -237,7 +239,7 @@ if (( ${_parseErrs} > 0 )); then
 	echo "	-g resource-group	name of the Azure resource group (default: ${_azureOwner}-${_azureProject}-rg)"
 	echo "	-h ORACLE_HOME		full path of the ORACLE_HOME software (default: /u01/app/oracle/product/19.0.0/dbhome_1)"
 	echo "	-i instance-type	name of the Azure VM instance type for database nodes (default: Standard_D2s_v4)"
-	echo "	-r region		name of Azure region (default: westcentralus)"
+	echo "	-r region		name of Azure region (default: westus2)"
 	echo "	-u urn			Azure URN for the VM from the marketplace"
 	echo "				(default: Oracle:oracle-database-19-3:oracle-database-19-0904:19.3.1)"
 	echo "	-v			set verbose output is true (default: false)"
@@ -967,45 +969,118 @@ if (( $? != 0 )); then
 	exit 1
 fi
 #
-#--------------------------------------------------------------------------------
-# SSH into the first VM to install the LVM2 package...
-#--------------------------------------------------------------------------------
-echo "`date` - INFO: yum install -y lvm2 on ${_vmName1}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr1} "sudo yum install -y lvm2" >> ${_logFile} 2>&1
+#------------------------------------------------------------------------
+# SSH into the first VM to determine how much physical RAM there is, then
+# use the RHEL7 formula to determine needed swap space, and then configure
+# the Azure Linux agent (waagent) to recreate upon boot...
+#------------------------------------------------------------------------
+echo "`date` - INFO: free -m to find physical RAM on ${_vmName1}..." | tee -a ${_logFile}
+typeset -i _ramMB=`ssh ${_azureOwner}@${_ipAddr1} "free -m | grep '^Mem:' | awk '{print \\\$2}'" 2>&1`
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo yum install -y lvm2 on ${_vmName1}" | tee -a ${_logFile}
+	echo "`date` - FAIL: free -m on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+if [[ "${_ramMB}" = "" ]]
+then
+	echo "`date` - FAIL: free -m returned NULL on ${_vmName}" | tee -a ${_logFile}
+	exit 1
+fi
+if (( ${_ramMB} <= 2048 ))			# when RAM less than 2GB then...
+then						# ...swap = double RAM
+	typeset -i _swapMB=${_ramMB}*2
+else
+	if (( ${_ramMB} <= 8192 ))		# when RAM less than 8GB then...
+	then					# ...swap = RAM
+		typeset -i _swapMB=${_ramMB}
+	else
+		if (( ${_ramMB} <= 43690 ))	# when RAM between 8-64GB then...
+		then				# ...swap = RAM * 1.5
+			typeset -i _swapMB=`echo ${_ramMB} | awk '{printf("%d\n",$1*1.5)}'`
+		else				# otherwise...
+			typeset -i _swapMB=65536 # ...swap no larger than 64GB
+		fi
+	fi
+fi
+echo "`date` - INFO: configure waagent for ${_swapMB}M swap on ${_vmName1}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo sed -i.old -e 's/^ResourceDisk.EnableSwap=n$/ResourceDisk.EnableSwap=y/' -e 's/^ResourceDisk.SwapSizeMB=0$/ResourceDisk.SwapSizeMB='${_swapMB}'/' /etc/waagent.conf" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo sed /etc/waagent.conf on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+echo "`date` - INFO: configure waagent for ${_swapMB}M swap on ${_vmName2}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr2} "sudo sed -i.old -e 's/^ResourceDisk.EnableSwap=n$/ResourceDisk.EnableSwap=y/' -e 's/^ResourceDisk.SwapSizeMB=0$/ResourceDisk.SwapSizeMB='${_swapMB}'/' /etc/waagent.conf" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo sed /etc/waagent.conf on ${_vmName2}" | tee -a ${_logFile}
+	exit 1
+fi
+echo "`date` - INFO: configure waagent for ${_swapMB}M swap on ${_vmName3}..." | tee -a ${_logFile}
+ssh -o StrictHostKeyChecking=no ${_azureOwner}@${_ipAddr3} "sudo sed -i.old -e 's/^ResourceDisk.EnableSwap=n$/ResourceDisk.EnableSwap=y/' -e 's/^ResourceDisk.SwapSizeMB=0$/ResourceDisk.SwapSizeMB='${_swapMB}'/' /etc/waagent.conf" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo sed /etc/waagent.conf on ${_vmName3}" | tee -a ${_logFile}
 	exit 1
 fi
 #
 #--------------------------------------------------------------------------------
-# SSH into the second VM to install the LVM2 package...
+# SSH into the first VM to install the LVM2 package and the "nc" (netcap) program...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: yum install -y lvm2 on ${_vmName2}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr2} "sudo yum install -y lvm2" >> ${_logFile} 2>&1
+echo "`date` - INFO: yum install -y lvm2 nc on ${_vmName1}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo yum install -y lvm2 nc" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo yum install -y lvm2 on ${_vmName2}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo yum install -y lvm2 nc on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
 #--------------------------------------------------------------------------------
-# SSH into the first VM to install the "nc" (netcap) command for use by the
-# azure-lb resource agent...
+# SSH into the first VM to perform an update of all OS packages to be sure that
+# all OS packages are up-to-date...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: yum install -y nc on ${_vmName1}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr1} "sudo yum install -y nc" >> ${_logFile} 2>&1
+echo "`date` - INFO: 1st yum update -y on ${_vmName1} (be prepared - long wait)..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo yum update -y" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo yum install -y nc on ${_vmName1}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo yum update -y on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
 #--------------------------------------------------------------------------------
-# SSH into the second VM to install the "nc" (netcap) command for use by the
-# azure-lb resource agent...
+# ...then run an update again, because sometimes things are missed the first time
+# around...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: yum install -y nc on ${_vmName2}..." | tee -a ${_logFile}
-ssh ${_azureOwner}@${_ipAddr2} "sudo yum install -y nc" >> ${_logFile} 2>&1
+echo "`date` - INFO: 2nd yum update -y on ${_vmName1}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo yum update -y" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
-	echo "`date` - FAIL: sudo yum install -y nc on ${_vmName2}" | tee -a ${_logFile}
+	echo "`date` - FAIL: sudo yum update -y on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
+# SSH into the second VM to install the LVM2 package and the "nc" (netcap) program...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: yum install -y lvm2 nc on ${_vmName2}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr2} "sudo yum install -y lvm2 nc" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo yum install -y lvm2 nc on ${_vmName2}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
+# SSH into the second VM to perform an update of all OS packages to be sure that
+# all OS packages are up-to-date...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: 1st yum update -y on ${_vmName2} (be prepared - long wait)..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr2} "sudo yum update -y" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo yum update -y on ${_vmName2}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
+# ...then run an update again, because sometimes things are missed the first time
+# around...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: 2nd yum update -y on ${_vmName2}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr2} "sudo yum update -y" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo yum update -y on ${_vmName2}" | tee -a ${_logFile}
 	exit 1
 fi
 #
@@ -1835,10 +1910,10 @@ if (( $? != 0 )); then
 fi
 #
 #--------------------------------------------------------------------------------
-# Pause for 10 seconds before running verbose "live check" on both nodes...
+# Pause for 30 seconds before running verbose "live check" on both nodes...
 #--------------------------------------------------------------------------------
-echo "`date` - INFO: pause for 10 seconds..." | tee -a ${_logFile}
-sleep 10
+echo "`date` - INFO: pause for 30 seconds..." | tee -a ${_logFile}
+sleep 30
 #
 #--------------------------------------------------------------------------------
 # SSH into the first VM to perform a verbose "live check" of the validity of the
