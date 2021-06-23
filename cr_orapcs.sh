@@ -111,13 +111,14 @@
 #	TGorman	05apr21	v0.9	correct handling of ephemeral SSD by instance type
 #	TGorman	26apr21 v1.0	set waagent.conf to rebuild swapfile after reboot,
 #				set default image to 19c, and perform yum updates
+#	TGorman	23jun21	v1.1	set resource-stickiness=100
 #================================================================================
 #
 #--------------------------------------------------------------------------------
 # Set global environment variables for the entire script...
 #--------------------------------------------------------------------------------
 _progName="orapcs"
-_progVersion="v1.0"
+_progVersion="v1.1"
 _progArgs="$*"
 _outputMode="terse"
 _azureOwner="`whoami`"
@@ -1690,6 +1691,18 @@ echo "`date` - INFO: pcs resource defaults migration-threshold=1 from ${_vmName1
 ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource defaults migration-threshold=1" >> ${_logFile} 2>&1
 if (( $? != 0 )); then
 	echo "`date` - FAIL: sudo pcs resource defaults migration-threshold=1 on ${_vmName1}" | tee -a ${_logFile}
+	exit 1
+fi
+#
+#--------------------------------------------------------------------------------
+# SSH into the first VM to set the default "stickiness" of resources to indicate
+# that healthy resources should not be moved. We do not want PCS moving resources
+# unless there is a failure or a command to do so...
+#--------------------------------------------------------------------------------
+echo "`date` - INFO: pcs resource defaults resource-stickiness=100 from ${_vmName1}..." | tee -a ${_logFile}
+ssh ${_azureOwner}@${_ipAddr1} "sudo pcs resource defaults resource-stickiness=100" >> ${_logFile} 2>&1
+if (( $? != 0 )); then
+	echo "`date` - FAIL: sudo pcs resource defaults resource-stickiness=100 on ${_vmName1}" | tee -a ${_logFile}
 	exit 1
 fi
 #
